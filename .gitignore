@@ -1,0 +1,8 @@
+# personal configuration and secrets (subscription link, API secret)
+settings.json
+CLAUDE.local.md
+
+# downloaded cores (setup.ps1 fetches them) and everything generated at run time
+bin/
+runtime/
+*.log

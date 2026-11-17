@@ -1,0 +1,88 @@
+{
+  "subscription": {
+    "url": "",
+    "insecure_tls": false,
+    "update_hours": 12
+  },
+  "node": "auto",
+  "auto_filter": "",
+  "auto_exclude": "",
+  "node_fallback": "on",
+  "mode": "tun",
+  "default": "proxy",
+  "block_quic_on_proxy": true,
+  "log_level": "warn",
+  "proxy": {
+    "listen": "127.0.0.1",
+    "port": 2080,
+    "xray_port": 20808
+  },
+  "tun": {
+    "name": "vless-tun",
+    "address4": "198.18.0.1/30",
+    "address6": "fdfe:dcba:9876::1/126",
+    "ipv6": "auto",
+    "mtu": 9000,
+    "stack": "mixed",
+    "exclude_routes": [
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "169.254.0.0/16",
+      "100.64.0.0/10",
+      "224.0.0.0/4",
+      "255.255.255.255/32",
+      "fc00::/7",
+      "fe80::/10",
+      "ff00::/8"
+    ]
+  },
+  "dns": {
+    "direct": "auto",
+    "proxy": "1.1.1.1"
+  },
+  "checkpoint": {
+    "enabled": false,
+    "path": "C:\\Program Files (x86)\\CheckPoint",
+    "auto_detect_gateway": true,
+    "exclude_ips": []
+  },
+  "ru_direct": {
+    "enabled": true,
+    "geoip": [
+      "ru"
+    ],
+    "geosite": [
+      "category-ru",
+      "tld-ru",
+      "available-only-in-ru",
+      "yandex",
+      "vk",
+      "mailru"
+    ],
+    "blocked_geosite": [
+      "blocked-in-ru"
+    ]
+  },
+  "apps": [
+    {
+      "name": "Torrents",
+      "processes": [
+        "qbittorrent.exe",
+        "utorrent.exe",
+        "bittorrent.exe"
+      ],
+      "vpn": false
+    }
+  ],
+  "rules": {
+    "block_processes": [],
+    "direct_domains": [],
+    "proxy_domains": [],
+    "direct_ips": [],
+    "proxy_ips": []
+  },
+  "ui": {
+    "port": 2090
+  }
+}
