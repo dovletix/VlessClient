@@ -1,0 +1,86 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="VlessClient" Manufacturer="VlessClient contributors"
+           Version="$(var.Version)" UpgradeCode="C4A56EB0-FEA9-4919-BE83-5BB13119DC54"
+           Scope="perMachine" InstallerVersion="500">
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of VlessClient is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.Payload)\License.rtf" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/dovletix/VlessClient" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="VlessClient">
+        <Component Id="DesktopApp">
+          <File Id="DesktopExe" Source="$(var.Payload)\VlessClient.exe">
+            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="VlessClient"
+                      Description="VlessClient" WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+          </File>
+        </Component>
+        <Component Id="Cli">
+          <File Source="$(var.Payload)\vpn.cmd" />
+          <Environment Id="CliPath" Name="Path" Value="[INSTALLFOLDER]" Part="last" System="yes" Action="set" />
+        </Component>
+        <Component Id="DesktopConfig"><File Source="$(var.Payload)\VlessClient.exe.config" /></Component>
+        <Component Id="Control"><File Id="ControlScript" Source="$(var.Payload)\vpn.ps1" /></Component>
+        <Component Id="SettingsTemplate"><File Source="$(var.Payload)\settings.example.json" /></Component>
+        <Component Id="InstallMarker"><File Source="$(var.Payload)\installed.marker" /></Component>
+        <Component Id="Cleanup"><File Id="CleanupScript" Source="$(var.Payload)\StopInstalledClient.ps1" /></Component>
+        <Component Id="License"><File Source="$(var.Payload)\LICENSE" /></Component>
+        <Component Id="ThirdParty"><File Source="$(var.Payload)\THIRD-PARTY.txt" /></Component>
+        <Directory Id="CoreFolder" Name="bin">
+          <Component Id="SingBox"><File Source="$(var.Payload)\bin\sing-box.exe" /></Component>
+          <Component Id="Xray"><File Source="$(var.Payload)\bin\xray.exe" /></Component>
+          <Component Id="GeoIp"><File Source="$(var.Payload)\bin\geoip.dat" /></Component>
+          <Component Id="GeoSite"><File Source="$(var.Payload)\bin\geosite.dat" /></Component>
+          <Component Id="Cronet"><File Source="$(var.Payload)\bin\libcronet.dll" /></Component>
+          <Component Id="SingBoxLicense"><File Source="$(var.Payload)\bin\sing-box-LICENSE.txt" /></Component>
+          <Component Id="XrayLicense"><File Source="$(var.Payload)\bin\Xray-core-LICENSE.txt" /></Component>
+          <Component Id="GplLicense"><File Source="$(var.Payload)\bin\GPL-3.0.txt" /></Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <Feature Id="Complete" Title="VlessClient">
+      <ComponentGroupRef Id="PayloadFiles" />
+    </Feature>
+
+    <!-- On upgrade preserve the user's task definition; its path is stable across versions. -->
+    <SetProperty Id="StopInstalledClient"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#CleanupScript]&quot;"
+                 Before="StopInstalledClient" Sequence="execute" Condition="Installed AND REMOVE=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
+    <SetProperty Id="RemoveInstalledClient"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#CleanupScript]&quot; -RemoveAutostart"
+                 Before="RemoveInstalledClient" Sequence="execute" Condition="Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction Id="StopInstalledClient" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="RemoveInstalledClient" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="StopInstalledClient" Before="RemoveFiles" Condition="Installed AND REMOVE=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
+      <Custom Action="RemoveInstalledClient" After="StopInstalledClient" Condition="Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+  <Fragment>
+    <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
+      <ComponentRef Id="DesktopApp" />
+      <ComponentRef Id="Cli" />
+      <ComponentRef Id="DesktopConfig" />
+      <ComponentRef Id="Control" />
+      <ComponentRef Id="SettingsTemplate" />
+      <ComponentRef Id="InstallMarker" />
+      <ComponentRef Id="Cleanup" />
+      <ComponentRef Id="License" />
+      <ComponentRef Id="ThirdParty" />
+      <ComponentRef Id="SingBox" />
+      <ComponentRef Id="Xray" />
+      <ComponentRef Id="GeoIp" />
+      <ComponentRef Id="GeoSite" />
+      <ComponentRef Id="Cronet" />
+      <ComponentRef Id="SingBoxLicense" />
+      <ComponentRef Id="XrayLicense" />
+      <ComponentRef Id="GplLicense" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

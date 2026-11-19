@@ -1,0 +1,29 @@
+name: Windows MSI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msi:
+    runs-on: windows-2022
+    env:
+      DOTNET_ROLL_FORWARD: Major
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build MSI
+        shell: powershell
+        run: .\installer\build-msi.ps1 -Version "1.0.$env:GITHUB_RUN_NUMBER"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VlessClient-x64
+          path: installer/dist/*.msi
+          if-no-files-found: error

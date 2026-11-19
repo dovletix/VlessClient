@@ -81,8 +81,5 @@
     "proxy_domains": [],
     "direct_ips": [],
     "proxy_ips": []
-  },
-  "ui": {
-    "port": 2090
   }
 }

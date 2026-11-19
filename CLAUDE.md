@@ -7,21 +7,21 @@ This repository is public. `settings.json`, `bin\`, `runtime\` and `CLAUDE.local
 ## How to control it
 
 - Everything goes through `.\vpn.cmd <command>` (see `vpn help`) or by editing `settings.json` and running `.\vpn.cmd reload`.
+- The PowerShell daemon supervises both cores. In an MSI installation the binary directory is under Program Files and writable data lives in `%LOCALAPPDATA%\VlessClient`. The per-user scheduled task uses the current Windows SID. Portable copies keep their original data directory and task name.
+- After editing `vpn.ps1`, use `vpn restart` to restart the daemon, then close and reopen the desktop app to reload its worker.
 - `runtime\xray.json` and `runtime\sing-box.json` are generated on every start/reload — never edit them, change the generator in `vpn.ps1` (`New-XrayConfig`, `New-SingboxConfig`).
-- The daemon (`vpn.ps1 daemon`) is a long-running PowerShell that supervises both cores. It runs elevated via scheduled task `VlessClient` and is controlled from a non-elevated shell through flag files (`runtime\stop.flag`, `runtime\reload.flag`). After editing `vpn.ps1` itself, run `.\vpn.cmd restart` — `reload` keeps the old script code in memory.
 - Validate without touching the running client: `.\vpn.cmd build tun` (generates configs, runs `xray -test` and `sing-box check`). Note it overwrites `runtime\*.json`; run `reload` afterwards if the client is up.
 - To see which rule a connection hit: set `"log_level": "info"` in `settings.json`, reload, read `runtime\sing-box.log`, then set it back to `warn`.
-- `setup.ps1` downloads the cores (versions and SHA-256 are pinned at the top of the file) and creates `settings.json`. When bumping a core version, update the hash and re-run `vpn build tun` and `vpn test`.
+- `cores.ps1` pins the source and SHA-256 of each core archive for both `setup.ps1` and `installer\build-msi.ps1`. When updating a pin, update `installer\THIRD-PARTY.txt` and validate both the MSI build and the generated configs.
 
-## Rules, apps and the web UI
+## Rules, apps and desktop UI
 
 - User lists live in `runtime\rules\*.json` (sing-box local rule-sets, written by `Write-RuleSets`). sing-box hot-reloads them, so `vpn add/remove` and the UI apply without a restart. Structural changes (mode, default, node, `ru_direct`) still need `reload`.
 - A rule change only affects new connections, so every change also cuts the affected live connections through the Clash API (`Close-ProcConnections` for apps, `Close-HostConnections` for domain/IP lists), ~400 ms after writing the rule-set: sing-box needs up to ~100 ms to pick up the file, and an app that reconnects sooner lands on the old route.
-- The UI server should run non-elevated. `vpn ui` from an admin shell starts it through Explorer (`ui\start-server.cmd`) for that reason. `vpn ui restart` first tries to stop the server itself and, if it survives (it is elevated), drops `runtime\ui-kill.flag` so that the elevated daemon kills it.
-- UI statistics (`Update-ConnStats`, 1 s tick): per exe totals, bytes split by route (`pBytes` VPN / `dBytes` direct), smoothed speeds (`r*`, bytes per second) and a per-destination map (`hosts`); everything counts from the UI server start. The page (`ui\index.html`) sorts by any column and shows speeds in Mbit/s.
+- `vpn ui` launches the WPF desktop app. `DesktopBackend` owns a PowerShell worker and exchanges UTF-8 JSON lines over its private stdin/stdout pipes. Elevation is requested for TUN or when changing autostart.
+- Desktop statistics (`Update-ConnStats`) come from the sing-box Clash API and cover the period since the window was opened. Speeds in `r*` are bytes per second; the table renders them in Mbit/s.
 - `settings.json` -> `apps`: named exe groups with `vpn: true|false` (true = through VLESS, false = direct).
 - `ru_direct`: geoip/geosite categories extracted from `bin\geoip.dat` / `bin\geosite.dat` by the embedded C# parser (`Export-GeoRules`, cached by `runtime\rules\geo.stamp`). `blocked_geosite` goes to VPN and is checked before the Russian direct rule.
-- Web UI: `.\vpn.cmd ui` starts `vpn.ps1 ui-server` (non-elevated, http://localhost:2090/, page in `ui\index.html`, exits after 15 idle minutes). After editing `vpn.ps1` run `.\vpn.cmd ui restart`. Per-exe statistics come from the sing-box Clash API (`settings.json` -> `api`) and exist only while the UI server runs.
 
 ## Nodes and real-time traffic (voice, games)
 

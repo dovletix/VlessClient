@@ -6,3 +6,7 @@ CLAUDE.local.md
 bin/
 runtime/
 *.log
+desktop/obj/
+installer/obj/
+installer/.wix/
+installer/dist/

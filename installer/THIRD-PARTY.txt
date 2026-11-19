@@ -1,0 +1,14 @@
+VlessClient bundles the unmodified files from these upstream releases.
+
+sing-box 1.14.4 (GPL v3 or later)
+Copyright (C) 2022 nekohasekai and contributors.
+Binary release: https://github.com/SagerNet/sing-box/releases/tag/v1.14.4
+Corresponding source: https://github.com/SagerNet/sing-box/tree/v1.14.4
+The upstream notice and the full GPL v3 text are in bin/.
+The libcronet.dll shipped in that release is built via:
+https://github.com/SagerNet/cronet-go
+
+Xray-core 26.11.9 (MPL 2.0)
+Binary release: https://github.com/XTLS/Xray-core/releases/tag/v26.11.9
+Corresponding source: https://github.com/XTLS/Xray-core/tree/v26.11.9
+The upstream license is in bin/Xray-core-LICENSE.txt.

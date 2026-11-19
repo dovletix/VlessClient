@@ -9,14 +9,17 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
 $Root = $PSScriptRoot
 $Bin = Join-Path $Root 'bin'
-$Run = Join-Path $Root 'runtime'
-$SettingsPath = Join-Path $Root 'settings.json'
+$Installed = Test-Path -LiteralPath (Join-Path $Root 'installed.marker')
+$Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$Data = $Root
+if ($Installed) { $Data = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'VlessClient' }
+$Run = Join-Path $Data 'runtime'
+$SettingsPath = Join-Path $Data 'settings.json'
 $SubCache = Join-Path $Run 'subscription.txt'
 $SubHeaders = Join-Path $Run 'subscription.headers'
 $StatePath = Join-Path $Run 'state.json'
 $StopFlag = Join-Path $Run 'stop.flag'
 $ReloadFlag = Join-Path $Run 'reload.flag'
-$UiKillFlag = Join-Path $Run 'ui-kill.flag'
 $DaemonLog = Join-Path $Run 'daemon.log'
 $XrayLog = Join-Path $Run 'xray.log'
 $SingLog = Join-Path $Run 'sing-box.log'
@@ -25,8 +28,12 @@ $SingCfg = Join-Path $Run 'sing-box.json'
 $XrayExe = Join-Path $Bin 'xray.exe'
 $SingExe = Join-Path $Bin 'sing-box.exe'
 $RulesDir = Join-Path $Run 'rules'
-$UiDir = Join-Path $Root 'ui'
 $TaskName = 'VlessClient'
+if ($Installed) { $TaskName += '-' + $Identity.User.Value }
+$SystemDir = [Environment]::SystemDirectory
+$PowerShellExe = Join-Path $SystemDir 'WindowsPowerShell\v1.0\powershell.exe'
+$ConsoleHost = Join-Path $SystemDir 'conhost.exe'
+$DaemonArguments = '--headless "{0}" -NoProfile -ExecutionPolicy Bypass -File "{1}" daemon' -f $PowerShellExe, $PSCommandPath
 $Utf8 = New-Object Text.UTF8Encoding($false)
 $Inv = [Globalization.CultureInfo]::InvariantCulture
 
@@ -90,11 +97,22 @@ function Invoke-Capture([string]$exe, [string]$arguments, [int]$timeoutMs = 1000
 }
 
 function Get-Settings {
-    if (-not (Test-Path $SettingsPath)) { throw "settings.json not found: $SettingsPath" }
+    if (-not (Test-Path -LiteralPath $SettingsPath)) {
+        if (-not $Installed -and $Command -ne 'desktop-worker') { throw "settings.json not found: $SettingsPath" }
+        try { [IO.File]::Copy((Join-Path $Root 'settings.example.json'), $SettingsPath, $false) }
+        catch [IO.IOException] { if (-not (Test-Path -LiteralPath $SettingsPath)) { throw } }
+    }
     return (Get-Content $SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json)
 }
 
-function Save-Settings($s) { Write-Json $SettingsPath $s }
+function Save-Settings($s) {
+    $temp = $SettingsPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        Write-Json $temp $s
+        if ([IO.File]::Exists($SettingsPath)) { [IO.File]::Replace($temp, $SettingsPath, [NullString]::Value) }
+        else { [IO.File]::Move($temp, $SettingsPath) }
+    } finally { [IO.File]::Delete($temp) }
+}
 
 function Get-State {
     if (Test-Path $StatePath) { try { return (Get-Content $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json) } catch {} }
@@ -118,17 +136,18 @@ function Test-Port([int]$port) {
 
 # ---------------------------------------------------------------- subscription
 
-function Update-Subscription {
-    $s = Get-Settings
-    $tmp = Join-Path $Run 'subscription.new'
-    Remove-Item $tmp -ErrorAction SilentlyContinue
-    $a = '-s -L -m 25 --noproxy * -o "{0}" -D "{1}"' -f $tmp, $SubHeaders
+function Update-Subscription($s = $null) {
+    if (-not $s) { $s = Get-Settings }
+    if ("$($s.subscription.url)" -notmatch '^https?://[^\x00-\x20"\x7f]+$' -or "$($s.subscription.url)".EndsWith('\')) { return $false }
+    $tmp = Join-Path $Run ('subscription-' + [guid]::NewGuid().ToString('N') + '.new')
+    $a = '-fsSL -m 25 --proto =http,https --proto-redir =http,https --noproxy * -o "{0}" -D "{1}"' -f $tmp, $SubHeaders
     if ($s.subscription.insecure_tls) { $a += ' -k' }
-    $a += ' "{0}"' -f $s.subscription.url
-    $r = Invoke-Capture 'curl.exe' $a 30000
-    if ($r.code -ne 0 -or -not (Test-Path $tmp)) { Write-Log "subscription: fetch failed (curl code $($r.code))"; return $false }
-    $raw = [IO.File]::ReadAllText($tmp, $Utf8).Trim()
-    Remove-Item $tmp -ErrorAction SilentlyContinue
+    $a += ' -- "{0}"' -f $s.subscription.url
+    try {
+        $r = Invoke-Capture (Join-Path $SystemDir 'curl.exe') $a 30000
+        if ($r.code -ne 0 -or -not (Test-Path $tmp)) { Write-Log "subscription: fetch failed (curl code $($r.code))"; return $false }
+        $raw = [IO.File]::ReadAllText($tmp, $Utf8).Trim()
+    } finally { [IO.File]::Delete($tmp) }
     if ($raw -notmatch '://') {
         try {
             $b = ($raw -replace '\s', '').Replace('-', '+').Replace('_', '/')
@@ -419,7 +438,6 @@ function Initialize-Settings {
     $changed = $false
     if (-not $s.PSObject.Properties['api']) { $s | Add-Member -NotePropertyName api -NotePropertyValue ([pscustomobject]@{ port = 19090; secret = '' }) -Force; $changed = $true }
     if (-not $s.api.secret) { $s.api.secret = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')); $changed = $true }
-    if (-not $s.PSObject.Properties['ui']) { $s | Add-Member -NotePropertyName ui -NotePropertyValue ([pscustomobject]@{ port = 2090 }) -Force; $changed = $true }
     if (-not $s.PSObject.Properties['apps']) { $s | Add-Member -NotePropertyName apps -NotePropertyValue @() -Force; $changed = $true }
     if (-not $s.PSObject.Properties['ru_direct']) { $s | Add-Member -NotePropertyName ru_direct -NotePropertyValue ([pscustomobject]@{ enabled = $true; geoip = @('ru'); geosite = @('category-ru', 'tld-ru', 'available-only-in-ru'); blocked_geosite = @('blocked-in-ru') }) -Force; $changed = $true }
     if ($changed) { Save-Settings $s }
@@ -913,12 +931,6 @@ function Invoke-Daemon {
             $action = $null
             while (-not $action) {
                 Start-Sleep -Milliseconds 700
-                if (Test-Path $UiKillFlag) {
-                    # A UI server started from an admin shell cannot be stopped by a normal shell; the daemon can.
-                    Remove-Item $UiKillFlag -ErrorAction SilentlyContinue
-                    foreach ($up in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'ui-server' })) { Stop-Process -Id $up.ProcessId -Force -ErrorAction SilentlyContinue }
-                    Write-Log 'daemon: stopped the UI server on request'
-                }
                 if (Test-Path $StopFlag) { $action = 'stop'; break }
                 if (Test-Path $ReloadFlag) { Remove-Item $ReloadFlag -ErrorAction SilentlyContinue; $fail = 0; $action = 'reload'; break }
                 if ($info.ok) {
@@ -954,7 +966,14 @@ function Invoke-Daemon {
 
 # ---------------------------------------------------------------- client commands
 
-function Get-Task { return (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) }
+function Get-Task {
+    $task = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue
+    if (-not $task -or @($task.Actions).Count -ne 1) { return $null }
+    $action = $task.Actions[0]
+    $legacy = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" daemon' -f $PSCommandPath
+    if ($action.Execute -in @($ConsoleHost, 'conhost.exe') -and $action.Arguments -in @($DaemonArguments, $legacy)) { return $task }
+    return $null
+}
 
 function Request-Reload {
     if (Test-DaemonRunning) {
@@ -970,33 +989,45 @@ function Request-Reload {
     return $false
 }
 
-function Start-Client {
-    if (Test-DaemonRunning) { 'Already running -> reloading configuration.'; [void](Request-Reload); Show-Status; return }
+function Start-Client([switch]$Quiet, [switch]$RequireTun) {
+    if (Test-DaemonRunning) {
+        if (-not $Quiet) { 'Already running -> reloading configuration.' }
+        [void](Request-Reload)
+        if (-not $Quiet) { Show-Status }
+        return
+    }
     Remove-Item $StopFlag, $ReloadFlag -ErrorAction SilentlyContinue
     $s = Get-Settings
+    if (-not "$($s.subscription.url)") { if ($Quiet) { throw 'subscription-required' }; 'ERROR: configure a subscription first.'; return }
     if (-not (Test-Path $SubCache)) {
         'Fetching subscription...'
-        if (-not (Update-Subscription)) { 'ERROR: cannot fetch the subscription and there is no cached copy.'; return }
+        if (-not (Update-Subscription)) {
+            if ($Quiet) { throw 'subscription-fetch' }
+            'ERROR: cannot fetch the subscription and there is no cached copy.'
+            return
+        }
     }
     $viaTask = $false
     if (Get-Task) {
         try { Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop; $viaTask = $true } catch { "Could not start the scheduled task ($_), starting directly." }
     }
     if (-not $viaTask) {
-        if (("$($s.mode)" -eq 'tun') -and -not (Test-Admin)) { 'NOTE: mode=tun needs admin rights. Starting local proxy only; run "vpn install" once to enable TUN + autostart.' }
-        $a = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" daemon' -f $PSCommandPath
-        Start-Process -FilePath 'conhost.exe' -ArgumentList $a -WorkingDirectory $Root -WindowStyle Hidden
+        if (("$($s.mode)" -eq 'tun') -and -not (Test-Admin)) {
+            if ($RequireTun) { throw 'elevation-required' }
+            'NOTE: mode=tun needs admin rights. Use the desktop window or run "vpn install" for TUN.'
+        }
+        Start-Process -FilePath $ConsoleHost -ArgumentList $DaemonArguments -WorkingDirectory $Root -WindowStyle Hidden
     }
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Milliseconds 500
         $st = Get-State
         if ($st -and ($st.error -or (Test-Port ([int]$s.proxy.port)))) { break }
     }
-    Show-Status
+    if (-not $Quiet) { Show-Status }
 }
 
 function Stop-Client {
-    if (-not (Test-DaemonRunning)) { Stop-Cores @(); Remove-Item $StatePath -ErrorAction SilentlyContinue; 'Not running.'; return }
+    if (-not (Test-DaemonRunning)) { if (-not $Installed) { Stop-Cores @() }; Remove-Item $StatePath -ErrorAction SilentlyContinue; 'Not running.'; return }
     $st = Get-State
     Write-Text $StopFlag '1'
     for ($i = 0; $i -lt 40; $i++) { Start-Sleep -Milliseconds 500; if (-not (Test-Pid $st.daemon_pid 'powershell*')) { break } }
@@ -1299,16 +1330,16 @@ function Install-Autostart {
         Remove-Item $log -ErrorAction SilentlyContinue
         'Requesting elevation (approve the UAC prompt)...'
         try {
-            $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}" install' -f $PSCommandPath)
+            $p = Start-Process -FilePath $PowerShellExe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}" install {1}' -f $PSCommandPath, $Identity.User.Value)
             [void]$p.WaitForExit(120000)
+            if ($p.HasExited -and $p.ExitCode -eq 5) { 'Use the same account to approve UAC.'; return }
         } catch { "Elevation was declined or failed: $_"; return }
         if (Test-Path $log) { Get-Content $log } else { 'No result from the elevated installer.' }
         return
     }
     try {
-        $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $arg = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" daemon' -f $PSCommandPath
-        $action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument $arg -WorkingDirectory $Root
+        $user = $Identity.Name
+        $action = New-ScheduledTaskAction -Execute $ConsoleHost -Argument $DaemonArguments -WorkingDirectory $Root
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
         $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
@@ -1325,8 +1356,9 @@ function Uninstall-Autostart {
         Remove-Item $log -ErrorAction SilentlyContinue
         'Requesting elevation (approve the UAC prompt)...'
         try {
-            $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}" uninstall' -f $PSCommandPath)
+            $p = Start-Process -FilePath $PowerShellExe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}" uninstall {1}' -f $PSCommandPath, $Identity.User.Value)
             [void]$p.WaitForExit(120000)
+            if ($p.HasExited -and $p.ExitCode -eq 5) { 'Use the same account to approve UAC.'; return }
         } catch { "Elevation was declined or failed: $_"; return }
         if (Test-Path $log) { Get-Content $log }
         return
@@ -1390,7 +1422,7 @@ function Show-Help {
     @'
 VlessClient - xray (VLESS) + sing-box (TUN, split tunneling, local proxy)
 
-  vpn ui                     open the control page (apps switches, live problems per exe)
+  vpn ui                     open the desktop window (app rules and live traffic)
   vpn status                 state, mode, node, exit IP
   vpn start | stop | restart
   vpn reload                 re-read settings.json and restart the cores
@@ -1413,8 +1445,8 @@ Settings live in settings.json next to this script.
 }
 
 # ---------------------------------------------------------------- web UI (local page on http://localhost:<ui.port>/)
-# The server runs as the normal user, edits settings.json + rule-set files and watches connections through
-# the sing-box Clash API. Statistics exist only while this server runs.
+# The desktop worker runs as the user and watches connections through the sing-box Clash API.
+# Statistics exist only while the desktop window is open.
 
 $script:Conns = @{}      # live connections: id -> info
 $script:Stats = @{}      # per exe: key -> counters
@@ -1678,6 +1710,7 @@ function Get-UiState([bool]$all) {
     return @{
         status  = @{
             running = $running; tun = [bool]($running -and $st.tun); admin = [bool]($running -and $st.admin); node = "$(if ($running) { $st.node } else { $s.node })"
+            ready = [bool]($running -and (Test-Pid $st.xray_pid 'xray') -and (Test-Pid $st.singbox_pid 'sing-box'))
             error = "$(if ($running) { $st.error })"; mode = "$($s.mode)"; default = "$($s.default)"; since = "$(if ($running) { $st.started })"
             api = $script:ApiOk; proxy = ('{0}:{1}' -f $s.proxy.listen, $s.proxy.port)
             ruDirect = [bool]($s.ru_direct -and $s.ru_direct.enabled); geo = $geo
@@ -1685,6 +1718,7 @@ function Get-UiState([bool]$all) {
         apps    = $appList
         rows    = $rows
         domains = @{ direct = @((L $s.rules.direct_domains) + (L $s.rules.direct_ips)); proxy = @((L $s.rules.proxy_domains) + (L $s.rules.proxy_ips)) }
+        configured = [bool]$s.subscription.url
     }
 }
 
@@ -1758,10 +1792,10 @@ function Close-HostConnections($entries) {
     return $closed
 }
 
-function Invoke-UiAction([string]$path, $d) {
+function Invoke-DesktopAction([string]$action, $d) {
     if (-not $d) { return @{ ok = $false; error = 'bad-request' } }
-    switch ($path) {
-        '/api/app' {
+    switch ($action) {
+        'app' {
             $s = Initialize-Settings
             $name = "$($d.name)".Trim()
             if (-not $name -or $name.Length -gt 60) { return @{ ok = $false; error = 'bad-name' } }
@@ -1783,11 +1817,11 @@ function Invoke-UiAction([string]$path, $d) {
             Close-ProcConnections $procs
             return @{ ok = $true }
         }
-        '/api/domain' {
+        'domain' {
             $s = Initialize-Settings
             $list = "$($d.list)"; $value = "$($d.value)".Trim().ToLower()
             if ($list -ne 'direct' -and $list -ne 'proxy') { return @{ ok = $false; error = 'bad-list' } }
-            if ($value -notmatch '^(regex|keyword|full):') { $value = $value -replace '^https?://', '' -replace '/.*$', '' }
+            if ($value -match '^https?://') { $value = $value -replace '^https?://', '' -replace '/.*$', '' }
             if ($value -notmatch '^\S{1,200}$' -or $value -match '["\\<>]') { return @{ ok = $false; error = 'bad-value' } }
             $isIp = ($value -match '^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$') -or ($value -match '^[0-9a-f:]+:[0-9a-f:]*(/\d{1,3})?$')
             $key = "${list}_domains"; if ($isIp) { $key = "${list}_ips" }
@@ -1800,139 +1834,135 @@ function Invoke-UiAction([string]$path, $d) {
             [void](Close-HostConnections @($value))
             return @{ ok = $true }
         }
-        '/api/reset' {
+        'reset' {
             $script:Stats = @{}; $script:Conns = @{}; $script:DestMap = @{}; $script:FirstPoll = $true
             return @{ ok = $true }
         }
-        '/api/control' {
+        'control' {
             $op = "$($d.op)"
             if (@('start', 'stop', 'restart') -notcontains $op) { return @{ ok = $false; error = 'bad-op' } }
-            $a = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" {1}' -f $PSCommandPath, $op
-            Start-Process -FilePath 'conhost.exe' -ArgumentList $a -WorkingDirectory $Root -WindowStyle Hidden
+            if ($op -in @('stop', 'restart')) {
+                $message = (Stop-Client) -join "`n"
+                if (Test-DaemonRunning) { throw $message }
+            }
+            if ($op -in @('start', 'restart')) { Start-DesktopClient }
+            return @{ ok = $true }
+        }
+        'settings' {
+            $s = Get-Settings
+            $task = Get-Task
+            $nodes = @((Get-Nodes) | ForEach-Object { @{ index = $_.index; name = $_.name } })
+            return @{ ok = $true; mode = $s.mode; default = $s.default; node = $s.node; nodes = $nodes
+                configured = [bool]$s.subscription.url; insecureTls = [bool]$s.subscription.insecure_tls
+                autostart = [bool]$task; path = $SettingsPath }
+        }
+        'save-settings' {
+            $s = Initialize-Settings
+            $url = "$($d.url)".Trim()
+            $mode = "$($d.mode)"
+            $route = "$($d.default)"
+            $node = "$($d.node)".Trim()
+            if ($mode -notin @('tun', 'proxy') -or $route -notin @('proxy', 'direct') -or -not $node) { throw 'bad-request' }
+            if ($url) {
+                $uri = $null
+                if ($url -notmatch '^https?://[^\x00-\x20"\x7f]+$' -or $url.EndsWith('\') -or -not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri) -or -not $uri.Host) { throw 'bad-subscription' }
+                $s.subscription.url = $url
+            }
+            $s.subscription.insecure_tls = [bool]$d.insecureTls
+            if ($url -and -not (Update-Subscription $s)) { throw 'subscription-fetch' }
+            $s.mode = $mode; $s.default = $route; $s.node = $node
+            Save-Settings $s
+            if ((Test-DaemonRunning) -and $mode -eq 'tun' -and -not (Get-State).admin) {
+                [void](Stop-Client)
+                if (Test-DaemonRunning) { throw 'stop-failed' }
+                Start-DesktopClient
+            } else { [void](Request-Reload) }
+            return @{ ok = $true }
+        }
+        'update' {
+            if (-not (Update-Subscription)) { throw 'subscription-fetch' }
+            [void](Request-Reload)
+            return @{ ok = $true }
+        }
+        'import-settings' {
+            if (Test-DaemonRunning) { throw 'stop-before-import' }
+            try { $source = Get-Content -LiteralPath "$($d.path)" -Raw -Encoding UTF8 | ConvertFrom-Json }
+            catch { throw 'bad-import' }
+            if (-not ($source -is [pscustomobject]) -or -not $source.subscription -or -not $source.proxy -or
+                -not $source.tun -or -not $source.rules -or $source.mode -notin @('tun', 'proxy') -or
+                $source.default -notin @('direct', 'proxy') -or -not $source.node) { throw 'bad-import' }
+            if ($source.api) { $source.api.secret = '' }
+            Save-Settings $source
+            Remove-Item -LiteralPath $SubCache, $SubHeaders -ErrorAction SilentlyContinue
+            [void](Initialize-Settings)
+            return @{ ok = $true }
+        }
+        'autostart' {
+            if ([bool]$d.enabled) { $message = (Install-Autostart) -join "`n" } else { $message = (Uninstall-Autostart) -join "`n" }
+            if ([bool](Get-Task) -ne [bool]$d.enabled) { throw $message }
             return @{ ok = $true }
         }
     }
     return @{ ok = $false; error = 'not-found' }
 }
 
-function Send-Response($ctx, [int]$code, [string]$type, [string]$text) {
-    $b = [Text.Encoding]::UTF8.GetBytes($text)
-    $r = $ctx.Response
-    $r.StatusCode = $code
-    $r.ContentType = $type
-    $r.Headers['Cache-Control'] = 'no-store'
-    $r.Headers['X-Content-Type-Options'] = 'nosniff'
-    $r.ContentLength64 = $b.Length
-    $r.OutputStream.Write($b, 0, $b.Length)
-    $r.OutputStream.Close()
-}
-
-function Invoke-UiRequest($ctx) {
-    $req = $ctx.Request
-    $path = $req.Url.AbsolutePath
-    $json = 'application/json; charset=utf-8'
-    if ($req.HttpMethod -eq 'GET') {
-        if ($path -eq '/' -or $path -eq '/index.html') { Send-Response $ctx 200 'text/html; charset=utf-8' ([IO.File]::ReadAllText((Join-Path $UiDir 'index.html'), $Utf8)); return }
-        if ($path -eq '/api/state') { Send-Response $ctx 200 $json ((Get-UiState ($req.QueryString['all'] -eq '1')) | ConvertTo-Json -Depth 8 -Compress); return }
-        Send-Response $ctx 404 'text/plain' 'not found'; return
-    }
-    if ($req.HttpMethod -eq 'POST') {
-        # CSRF guard: a foreign web page cannot send this custom header without a CORS preflight, which is never approved.
-        $origin = $req.Headers['Origin']
-        $own = 'http://localhost:{0}' -f $script:UiPort
-        if ($req.Headers['X-VlessClient'] -ne '1' -or ($origin -and $origin -ne $own)) { Send-Response $ctx 403 $json '{"ok":false,"error":"forbidden"}'; return }
-        $sr = New-Object IO.StreamReader($req.InputStream, [Text.Encoding]::UTF8)
-        $body = $sr.ReadToEnd(); $sr.Close()
-        $d = $null
-        try { $d = $body | ConvertFrom-Json } catch {}
-        $res = Invoke-UiAction $path $d
-        Send-Response $ctx 200 $json ($res | ConvertTo-Json -Compress)
-        return
-    }
-    Send-Response $ctx 405 'text/plain' 'method not allowed'
-}
-
-function Invoke-UiServer {
-    $s = Initialize-Settings
-    $script:UiPort = [int]$s.ui.port
-    $script:ApiPort = [int]$s.api.port
-    $script:ApiSecret = "$($s.api.secret)"
-    Add-Type -AssemblyName System.Web.Extensions
-    $script:Js = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-    $script:Js.MaxJsonLength = 67108864
-    $listener = New-Object Net.HttpListener
-    $listener.Prefixes.Add(('http://localhost:{0}/' -f $script:UiPort))
-    try { $listener.Start() } catch { Write-Log "ui: cannot listen on port $($script:UiPort): $_"; return }
-    Write-Text (Join-Path $Run 'ui.pid') "$PID"
-    Write-Log "ui: server started on http://localhost:$($script:UiPort)/ (pid $PID)"
-    $lastReq = Get-Date
-    $lastPoll = (Get-Date).AddSeconds(-2)
-    $task = $listener.GetContextAsync()
-    try {
-        while ($true) {
-            $wait = 1000 - [int]((Get-Date) - $lastPoll).TotalMilliseconds
-            if ($wait -lt 1) { $wait = 1 }
-            if ($task.Wait($wait)) {
-                $ctx = $task.Result
-                $task = $listener.GetContextAsync()
-                $lastReq = Get-Date
-                try { Invoke-UiRequest $ctx } catch { Write-Log "ui: request failed: $_"; try { $ctx.Response.Abort() } catch {} }
-            }
-            if (((Get-Date) - $lastPoll).TotalMilliseconds -ge 1000) {
-                $lastPoll = Get-Date
-                try { Update-ConnStats; Read-NewLogErrors } catch { Write-Log "ui: poll failed: $_" }
-            }
-            if (((Get-Date) - $lastReq).TotalMinutes -gt 15) { break }
+function Start-DesktopClient {
+    $s = Get-Settings
+    if (-not "$($s.subscription.url)") { throw 'subscription-required' }
+    if ($s.mode -eq 'tun' -and -not (Test-Admin)) {
+        try { [void](Start-Client -Quiet -RequireTun) }
+        catch {
+            if ($_.Exception.Message -ne 'elevation-required') { throw }
+            $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" desktop-start {1}' -f $PSCommandPath, $Identity.User.Value
+            try { $child = Start-Process -FilePath $PowerShellExe -ArgumentList $args -Verb RunAs -WindowStyle Hidden -PassThru }
+            catch { throw 'elevation-declined' }
+            if (-not $child.WaitForExit(105000)) { throw 'start-timeout' }
+            if ($child.ExitCode -eq 5) { throw 'elevation-account' }
+            if ($child.ExitCode -ne 0) { throw 'start-failed' }
         }
-    } catch {
-        Write-Log "ui: server crashed: $_"
-    } finally {
-        try { $listener.Stop() } catch {}
-        Write-Log 'ui: server stopped'
+    } else { [void](Start-Client -Quiet) }
+    $st = Get-State
+    if ($st -and $st.error) { throw "$($st.error)" }
+    if (-not (Test-DaemonRunning) -or -not (Test-Pid $st.singbox_pid 'sing-box') -or -not (Test-Pid $st.xray_pid 'xray')) { throw 'start-failed' }
+    if ($s.mode -eq 'tun' -and -not $st.tun) { throw 'elevation-required' }
+}
+
+function Invoke-DesktopWorker {
+    [Console]::InputEncoding = $Utf8
+    [Console]::OutputEncoding = $Utf8
+    while ($null -ne ($line = [Console]::ReadLine())) {
+        try {
+            $request = ConvertFrom-Json -InputObject $line
+            Initialize-Api (Initialize-Settings)
+            if ($request.action -eq 'state') {
+                Update-ConnStats
+                Read-NewLogErrors
+                $reply = @{ ok = $true; state = (Get-UiState ([bool]$request.data.all)) }
+            } else {
+                $reply = Invoke-DesktopAction "$($request.action)" $request.data
+            }
+        } catch {
+            $reply = @{ ok = $false; error = $_.Exception.Message }
+        }
+        [Console]::WriteLine(($reply | ConvertTo-Json -Depth 15 -Compress))
     }
 }
 
 function Open-Ui {
-    $s = Initialize-Settings
-    $port = [int]$s.ui.port
-    $url = 'http://localhost:{0}/' -f $port
-    $arg = "$(@($Rest)[0])"
-    if ($arg -eq 'stop' -or $arg -eq 'restart') {
-        $pidFile = Join-Path $Run 'ui.pid'
-        if (Test-Path $pidFile) {
-            $id = [int]([IO.File]::ReadAllText($pidFile).Trim())
-            if (Test-Pid $id 'powershell*') { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
-            Remove-Item $pidFile -ErrorAction SilentlyContinue
-        }
-        # Fallback: find the server by its command line (covers a missing pid file).
-        foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'ui-server' })) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
-        for ($i = 0; $i -lt 8; $i++) { if (-not (Test-Port $port)) { break }; Start-Sleep -Milliseconds 250 }
-        if ((Test-Port $port) -and (Test-DaemonRunning)) {
-            # Still alive: it was started elevated. Ask the (elevated) daemon to stop it.
-            Write-Text $UiKillFlag '1'
-            for ($i = 0; $i -lt 32; $i++) { if (-not (Test-Port $port)) { break }; Start-Sleep -Milliseconds 250 }
-        }
-        if (Test-Port $port) { 'WARNING: the old UI server is still running (started from an admin shell?).' }
-        if ($arg -eq 'stop') { 'UI server stopped.'; return }
-    }
-    if (-not (Test-Port $port)) {
-        $a = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" ui-server' -f $PSCommandPath
-        if (Test-Admin) {
-            # Called from an admin shell: let Explorer launch the server so that it runs as a normal process.
-            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f (Join-Path $UiDir 'start-server.cmd'))
-        } else {
-            Start-Process -FilePath 'conhost.exe' -ArgumentList $a -WorkingDirectory $Root -WindowStyle Hidden
-        }
-        for ($i = 0; $i -lt 30; $i++) { Start-Sleep -Milliseconds 300; if (Test-Port $port) { break } }
-    }
-    if ($arg -ne 'nobrowser' -and $arg -ne 'restart') { Start-Process $url }
-    "UI: $url"
+    $exe = Join-Path $Root 'VlessClient.exe'
+    if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $Root 'desktop\bin\Release\net472\VlessClient.exe' }
+    if (-not (Test-Path -LiteralPath $exe)) { throw 'Desktop app not found. Install the MSI or build desktop/VlessClient.csproj in Release.' }
+    Start-Process -FilePath $exe -WorkingDirectory $Root
 }
 
 # ---------------------------------------------------------------- dispatch
 
 switch ($Command.ToLower()) {
     'daemon' { Invoke-Daemon }
+    'desktop-start' {
+        if ("$(@($Rest)[0])" -ne $Identity.User.Value -or -not (Test-Admin)) { exit 5 }
+        try { [void](Start-Client -Quiet); exit 0 } catch { Write-Log "desktop: start failed: $_"; exit 1 }
+    }
     'start' { Start-Client }
     'stop' { Stop-Client }
     'restart' { Stop-Client; Start-Client }
@@ -1948,12 +1978,12 @@ switch ($Command.ToLower()) {
     'rules' { Show-Rules }
     'add' { Edit-Rule 'add' $Rest }
     'remove' { Edit-Rule 'remove' $Rest }
-    'install' { Install-Autostart }
-    'uninstall' { Uninstall-Autostart }
+    'install' { if ($Rest -and "$($Rest[0])" -ne $Identity.User.Value) { exit 5 }; Install-Autostart }
+    'uninstall' { if ($Rest -and "$($Rest[0])" -ne $Identity.User.Value) { exit 5 }; Uninstall-Autostart }
     'doctor' { Invoke-Doctor }
     'logs' { Show-Logs $Rest }
     'ui' { Open-Ui }
-    'ui-server' { Invoke-UiServer }
+    'desktop-worker' { Invoke-DesktopWorker }
     'geo' { Initialize-Geo; $f = "$(@($Rest)[0])"; foreach ($d in 'geoip.dat', 'geosite.dat') { "== $d =="; [VcGeoDat]::Codes((Join-Path $Bin $d)) | Where-Object { -not $f -or $_ -match $f } } }
     'build' { [void](Update-Subscription); $i = Build-Configs ((Test-Admin) -or ("$(@($Rest)[0])" -eq 'tun')); if ($i.ok) { "OK: configs generated (tun=$($i.tun), node=$($i.node))" } else { "FAILED: $($i.error)" } }
     default { Show-Help }

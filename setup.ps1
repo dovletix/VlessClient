@@ -17,20 +17,6 @@ $Root = $PSScriptRoot
 $Bin = Join-Path $Root 'bin'
 $Utf8 = New-Object Text.UTF8Encoding($false)
 
-# Official release archives. The SHA-256 of every archive is checked before anything is unpacked.
-$Cores = @(
-    @{ name = 'sing-box'; version = '1.14.4'
-        url = 'https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip'
-        sha256 = '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df'
-        files = @('sing-box.exe', 'libcronet.dll')
-    },
-    @{ name = 'Xray-core'; version = '26.11.9'
-        url = 'https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-windows-64.zip'
-        sha256 = '1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d'
-        files = @('xray.exe', 'geoip.dat', 'geosite.dat')
-    }
-)
-
 function Step([string]$text) { Write-Host ''; Write-Host "== $text" -ForegroundColor Cyan }
 
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw "Only 64-bit Windows (x64) is supported; this machine reports $($env:PROCESSOR_ARCHITECTURE)." }
@@ -38,31 +24,8 @@ if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { throw 'curl.exe
 
 # ---------------------------------------------------------------- cores
 Step 'Cores (sing-box, Xray)'
-if (-not (Test-Path $Bin)) { New-Item -ItemType Directory -Force $Bin | Out-Null }
-foreach ($c in $Cores) {
-    $missing = @($c.files | Where-Object { -not (Test-Path (Join-Path $Bin $_)) })
-    if ($missing.Count -eq 0 -and -not $Force) { "  $($c.name): already installed"; continue }
-    $tmp = Join-Path $env:TEMP ('vlessclient-' + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Force $tmp | Out-Null
-    try {
-        $zip = Join-Path $tmp 'core.zip'
-        "  $($c.name) $($c.version): downloading $($c.url)"
-        & curl.exe -sS -L -m 600 -o $zip $c.url
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zip)) { throw "Download failed (curl exit code $LASTEXITCODE). Check the connection and run setup again." }
-        $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-        if ($hash -ne $c.sha256) { throw "Checksum mismatch for $($c.name): expected $($c.sha256), got $hash. Nothing was installed." }
-        "  $($c.name): checksum OK"
-        $out = Join-Path $tmp 'x'
-        Expand-Archive -Path $zip -DestinationPath $out -Force
-        foreach ($f in $c.files) {
-            $src = Get-ChildItem $out -Recurse -File -Filter $f | Select-Object -First 1
-            if (-not $src) { throw "File $f not found inside the $($c.name) archive." }
-            Copy-Item $src.FullName (Join-Path $Bin $f) -Force
-        }
-    } finally {
-        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
+. (Join-Path $Root 'cores.ps1')
+Install-Cores $Bin -Force:$Force
 
 # ---------------------------------------------------------------- settings.json
 Step 'Settings'
@@ -126,7 +89,7 @@ Step 'Done. Next steps'
   vpn test       check that the nodes of your subscription answer
   vpn install    autostart at logon + system-wide tunnel (asks for administrator rights once)
   vpn start      start now
-  vpn ui         control page: per-app switches, live traffic, problems
+  vpn ui         open the desktop app (requires an MSI install or a Release build)
   vpn help       all commands
 
   Without "vpn install" the client still works as a local proxy on 127.0.0.1:2080 (vpn start).
