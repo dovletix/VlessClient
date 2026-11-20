@@ -1,5 +1,7 @@
+# Builds installer\dist\VlessClient-<version>-x64.msi: the app, the cores (pinned in cores.ps1) and the Windows service.
+#   .\installer\build-msi.ps1 -Version 2.0.0
 param(
-    [ValidatePattern('^\d{1,3}\.\d{1,3}\.\d{1,5}$')][string]$Version = '1.0.0',
+    [ValidatePattern('^\d{1,3}\.\d{1,3}\.\d{1,5}$')][string]$Version = '2.0.0',
     [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist')
 )
 
@@ -8,10 +10,6 @@ $root = Split-Path $PSScriptRoot -Parent
 $payload = Join-Path $PSScriptRoot 'obj\payload'
 $bin = Join-Path $payload 'bin'
 $output = [IO.Path]::GetFullPath($OutputDirectory)
-$versionNumber = [version]$Version
-if ($versionNumber.Major -gt 255 -or $versionNumber.Minor -gt 255 -or $versionNumber.Build -gt 65535) {
-    throw 'MSI version fields must be in the ranges 0-255, 0-255, 0-65535.'
-}
 if (-not $env:DOTNET_ROLL_FORWARD) { $env:DOTNET_ROLL_FORWARD = 'Major' }
 
 function Invoke-Dotnet([string[]]$Arguments) {
@@ -19,25 +17,24 @@ function Invoke-Dotnet([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet $($Arguments -join ' ') failed (exit $LASTEXITCODE)." }
 }
 
-New-Item -ItemType Directory -Force $payload, $output | Out-Null
+if (Test-Path $payload) { Remove-Item -LiteralPath $payload -Recurse -Force }
+New-Item -ItemType Directory -Force $payload, $bin, $output | Out-Null
+
 . (Join-Path $root 'cores.ps1')
 Install-Cores $bin -IncludeLicenses
 
-$licenseFile = Join-Path $bin 'GPL-3.0.txt'
-& curl.exe --fail --silent --show-error --location --max-time 60 --output $licenseFile 'https://www.gnu.org/licenses/gpl-3.0.txt'
-if ($LASTEXITCODE -ne 0) { throw 'Could not download the full GNU GPL v3 license.' }
-$mit = [IO.File]::ReadAllText((Join-Path $root 'LICENSE'))
-$rtfText = $mit.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}') -replace '\r?\n', '\par '
-[IO.File]::WriteAllText((Join-Path $payload 'License.rtf'), ('{\rtf1\ansi ' + $rtfText + '}'), [Text.Encoding]::ASCII)
+$gpl = Join-Path $bin 'GPL-3.0.txt'
+& curl.exe --fail --silent --show-error --location --max-time 60 --output $gpl 'https://www.gnu.org/licenses/gpl-3.0.txt'
+if ($LASTEXITCODE -ne 0) { throw 'Could not download the GNU GPL v3 text.' }
 
-foreach ($file in 'vpn.ps1', 'vpn.cmd', 'settings.example.json', 'LICENSE') {
-    Copy-Item -LiteralPath (Join-Path $root $file) -Destination $payload -Force
-}
-foreach ($file in 'StopInstalledClient.ps1', 'THIRD-PARTY.txt') {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $payload -Force
-}
-[IO.File]::WriteAllText((Join-Path $payload 'installed.marker'), 'VlessClient MSI')
-Invoke-Dotnet @('build', (Join-Path $root 'desktop\VlessClient.csproj'), '-c', 'Release', '-o', $payload)
+$mit = [IO.File]::ReadAllText((Join-Path $root 'LICENSE'))
+$rtf = $mit.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}') -replace '\r?\n', '\par '
+[IO.File]::WriteAllText((Join-Path $payload 'License.rtf'), ('{\rtf1\ansi ' + $rtf + '}'), [Text.Encoding]::ASCII)
+Copy-Item (Join-Path $root 'LICENSE') $payload
+Copy-Item (Join-Path $PSScriptRoot 'THIRD-PARTY.txt') $payload
+Copy-Item (Join-Path $root 'src\VlessClient\Assets\app.ico') $payload
+
+Invoke-Dotnet @('build', (Join-Path $root 'src\VlessClient\VlessClient.csproj'), '-c', 'Release', '-o', $payload, "-p:Version=$Version", '-nologo', '-v', 'q')
 
 $msi = Join-Path $output "VlessClient-$Version-x64.msi"
 Push-Location $PSScriptRoot

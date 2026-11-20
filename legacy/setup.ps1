@@ -24,7 +24,7 @@ if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { throw 'curl.exe
 
 # ---------------------------------------------------------------- cores
 Step 'Cores (sing-box, Xray)'
-. (Join-Path $Root 'cores.ps1')
+. (Join-Path (Split-Path $Root -Parent) 'cores.ps1')
 Install-Cores $Bin -Force:$Force
 
 # ---------------------------------------------------------------- settings.json

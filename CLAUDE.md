@@ -1,47 +1,34 @@
 # VlessClient — notes for Claude
 
-Windows client for a VLESS subscription: `bin\xray.exe` (outbound to the subscription nodes, SOCKS on 127.0.0.1:20808) + `bin\sing-box.exe` (TUN `vless-tun`, routing rules, mixed proxy on 127.0.0.1:2080). User-facing docs: `README.md`.
+Windows VPN client for VLESS subscriptions, aimed at non-technical users (one big button) with an "advanced" section for power users. Native C# (.NET Framework 4.8, WPF + WinForms tray), shipped as an MSI. This repository is public: never commit subscription links, server addresses, API secrets or anything from a user's machine. User-facing docs: `README.md`.
 
-This repository is public. `settings.json`, `bin\`, `runtime\` and `CLAUDE.local.md` are git-ignored and hold everything personal (subscription link, API secret, machine notes). Never move such data into tracked files; `settings.example.json` is the template for new users.
+## Layout
 
-## How to control it
+- `src/VlessClient/` — one exe, several modes:
+  - `--service`: the Windows service "VlessClient" (LocalSystem). `Service/Engine.cs` owns everything: subscription, node choice, cores, supervision. `Service/PipeServer.cs` exposes it on the named pipe `VlessClient.Control.v2` (one JSON request per line; any authenticated user may connect).
+  - no args / `--tray`: the window and the tray icon (`Ui/`), non-elevated, talks to the service only through the pipe (`Ui/ServiceClient.cs`). One instance per session; a second start just shows the window.
+  - `--cleanup`: run by the uninstaller (not on upgrade); deletes `C:\ProgramData\VlessClient`.
+  - `--console`: development — engine + pipe inside this process (stop by creating `console.stop` in the data dir). With `VLESSCLIENT_DATA` / `VLESSCLIENT_BIN` it runs without installing anything; not elevated -> proxy-only mode.
+  - `--snapshot <dir>`: development — renders every page off-screen to PNG (needs a running engine). Use it to check the UI without disturbing the user's desktop.
+- `src/VlessClient/Core/` — settings, subscription parsing, xray / sing-box config builders (ported from the PowerShell edition), geo rule-sets (parser for Xray's geoip.dat / geosite.dat), network facts.
+- `installer/` — WiX 4 package (`Package.wxs`), `build-msi.ps1` (cores from `cores.ps1`, pinned versions + SHA-256), `THIRD-PARTY.txt`.
+- `.github/workflows/windows-msi.yml` — builds the MSI on every push; a `v*` tag also publishes a GitHub Release, which the in-app updater reads (`Service/Updater.cs`: releases/latest, the `.msi` asset and its `digest`).
+- `legacy/` — the old PowerShell edition (`vpn.ps1`). Independent of the MSI; do not run both (two TUNs).
 
-- Everything goes through `.\vpn.cmd <command>` (see `vpn help`) or by editing `settings.json` and running `.\vpn.cmd reload`.
-- The PowerShell daemon supervises both cores. In an MSI installation the binary directory is under Program Files and writable data lives in `%LOCALAPPDATA%\VlessClient`. The per-user scheduled task uses the current Windows SID. Portable copies keep their original data directory and task name.
-- After editing `vpn.ps1`, use `vpn restart` to restart the daemon, then close and reopen the desktop app to reload its worker.
-- `runtime\xray.json` and `runtime\sing-box.json` are generated on every start/reload — never edit them, change the generator in `vpn.ps1` (`New-XrayConfig`, `New-SingboxConfig`).
-- Validate without touching the running client: `.\vpn.cmd build tun` (generates configs, runs `xray -test` and `sing-box check`). Note it overwrites `runtime\*.json`; run `reload` afterwards if the client is up.
-- To see which rule a connection hit: set `"log_level": "info"` in `settings.json`, reload, read `runtime\sing-box.log`, then set it back to `warn`.
-- `cores.ps1` pins the source and SHA-256 of each core archive for both `setup.ps1` and `installer\build-msi.ps1`. When updating a pin, update `installer\THIRD-PARTY.txt` and validate both the MSI build and the generated configs.
+## Behaviour that matters
 
-## Rules, apps and desktop UI
-
-- User lists live in `runtime\rules\*.json` (sing-box local rule-sets, written by `Write-RuleSets`). sing-box hot-reloads them, so `vpn add/remove` and the UI apply without a restart. Structural changes (mode, default, node, `ru_direct`) still need `reload`.
-- A rule change only affects new connections, so every change also cuts the affected live connections through the Clash API (`Close-ProcConnections` for apps, `Close-HostConnections` for domain/IP lists), ~400 ms after writing the rule-set: sing-box needs up to ~100 ms to pick up the file, and an app that reconnects sooner lands on the old route.
-- `vpn ui` launches the WPF desktop app. `DesktopBackend` owns a PowerShell worker and exchanges UTF-8 JSON lines over its private stdin/stdout pipes. Elevation is requested for TUN or when changing autostart.
-- Desktop statistics (`Update-ConnStats`) come from the sing-box Clash API and cover the period since the window was opened. Speeds in `r*` are bytes per second; the table renders them in Mbit/s.
-- `settings.json` -> `apps`: named exe groups with `vpn: true|false` (true = through VLESS, false = direct).
-- `ru_direct`: geoip/geosite categories extracted from `bin\geoip.dat` / `bin\geosite.dat` by the embedded C# parser (`Export-GeoRules`, cached by `runtime\rules\geo.stamp`). `blocked_geosite` goes to VPN and is checked before the Russian direct rule.
-
-## Nodes and real-time traffic (voice, games)
-
-- UDP rides inside TCP (VLESS), so node choice decides voice quality. `vpn quality [sec]` measures UDP loss / latency / jitter (STUN every 50 ms) through every node in a separate xray; `vpn quality live [sec]` probes the running client at three stages (xray only, sing-box proxy, TUN). Compare stages to find which part adds jitter.
-- Do not mix good and bad nodes in one balancer. With `node: auto` xray's `leastPing` sends every new flow to whichever node probes fastest at that moment; when the good nodes are busy, new flows (a voice channel is a new UDP flow) land on slow relay nodes. Keep such nodes out with `auto_exclude` (regex on the node name), or pin a node.
-- A single pinned node gets a spare automatically: `New-XrayConfig` builds a one-candidate balancer whose `fallbackTag` is the first other node of the auto group, so traffic never hops but survives a dead node (`node_fallback: "off"` disables it).
-
-## IPv6
-
-- `tun.ipv6` = `auto` (default) adds the IPv6 address to the TUN only when a physical adapter has a global IPv6 address (`Test-NativeIPv6`). Without native IPv6 an IPv6 route on the TUN makes apps connect over IPv6 (some DNS servers hand out AAAA anyway): proxied traffic works, direct traffic hangs for 5 s (`dial tcp [2001:...]:443: i/o timeout` in `sing-box.log`).
-- Do not "reject" direct IPv6 by rule instead: the TUN accepts the TCP handshake before routing (sniff), so apps see a connected-then-closed socket and do not fall back to IPv4.
-
-## Performance
-
-- Direct traffic through the TUN reaches the same speed as traffic that bypasses it (`curl --interface <LAN IP>` bypasses the TUN and is a handy baseline).
-- sing-box spends noticeably more CPU on direct traffic than on proxied traffic (mostly kernel time). `stack` mixed/gvisor/system made no difference in tests; MTU 9000 vs 1500 was a small gain. Every such experiment needs `reload`, which cuts all connections.
+- Data: `C:\ProgramData\VlessClient` (settings.json, runtime\ configs and rule-sets, logs\). The service resets its ACL to SYSTEM + Administrators full, Users read: the service runs downloaded MSIs and generated configs as SYSTEM.
+- The client never touches the Windows proxy settings. The window switches off a Windows proxy that points to a dead 127.0.0.1 port (`Ui/ProxyFix.cs`) — the classic leftover of Happ and similar apps.
+- Cores run in a job object with KILL_ON_JOB_CLOSE: when the service dies, xray / sing-box die too and the Wintun adapter with its routes disappears. Verified by killing the engine process.
+- Node choice: `node: "auto"` probes every node of the pool (separate xray, one SOCKS port per node, HTTP through each) and pins the fastest working one; the last good node is kept unless another is much faster. Never put several nodes into one balancer: new flows (a voice call) would hop to slow relays. The pinned node gets a spare via a one-candidate balancer with `fallbackTag`.
+- Rule changes (apps, domains) are written to rule-set files that sing-box hot-reloads; mode / default route / node / Russia switch reconnect.
+- IPv6 on the tunnel only when a physical adapter has a real global IPv6 address. Teredo (2001:0::/32 on a Tunnel-type interface) and 6to4 do not count: an IPv6 route on the tunnel without real IPv6 makes direct IPv6 connections hang.
+- Updates: manual by default (button in Settings); `auto_update` makes the service check every 12 h and install. The service downloads the MSI from this repo's releases only, checks the SHA-256 digest and runs `msiexec /qn`; the window notices status "installing", schedules its own restart and exits; the MSI closes running copies (util:CloseApplication) so no reboot is needed.
+- Ports (localhost): mixed proxy 12080, xray SOCKS 12081, Clash API 12090 (secret in settings), probe ports 12200+.
 
 ## Constraints
 
-- `vpn.ps1` and `setup.ps1` must stay ASCII-only: Windows PowerShell 5.1 reads BOM-less files as ANSI. No PowerShell 7 syntax (`?:`, `??`, `&&`).
-- Functions that return arrays use `return , $x`; do not wrap those calls in `@(...)` (it nests the array).
-- Coexistence with a corporate VPN: keep `strict_route` off and keep private ranges in `tun.exclude_routes`. The `checkpoint` section (off by default) adds a process rule, IPsec ports and the detected gateway for Check Point Endpoint Security.
-- `install`/`uninstall` need elevation (UAC prompt shown to the user).
+- Keep the UI text Russian and plain: the main audience cannot read technical messages.
+- `legacy/*.ps1` must stay ASCII-only (Windows PowerShell 5.1).
+- Build check before committing: `dotnet build src/VlessClient/VlessClient.csproj -c Release`; installer: `installer/build-msi.ps1`.
+- Commits use the noreply identity configured in the repo; never the personal e-mail.

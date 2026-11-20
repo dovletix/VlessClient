@@ -1,40 +1,62 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <Package Name="VlessClient" Manufacturer="VlessClient contributors"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="VlessClient" Manufacturer="VlessClient contributors" Language="1049" Codepage="1251"
            Version="$(var.Version)" UpgradeCode="C4A56EB0-FEA9-4919-BE83-5BB13119DC54"
            Scope="perMachine" InstallerVersion="500">
-    <MajorUpgrade Schedule="afterInstallInitialize"
-                  DowngradeErrorMessage="A newer version of VlessClient is already installed." />
+    <SummaryInformation Description="VlessClient — VPN-клиент для подписок VLESS" Codepage="1251" />
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="Уже установлена более новая версия VlessClient." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
-    <ui:WixUI Id="WixUI_Minimal" />
-    <WixVariable Id="WixUILicenseRtf" Value="$(var.Payload)\License.rtf" />
+
+    <Icon Id="AppIcon" SourceFile="$(var.Payload)\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Property Id="ARPHELPLINK" Value="https://github.com/dovletix/VlessClient" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/dovletix/VlessClient" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <!-- The window (and, on upgrade, the old service process) holds VlessClient.exe open: close it so no reboot is needed. -->
+    <util:CloseApplication Id="CloseVlessClient" Target="VlessClient.exe" TerminateProcess="0" RebootPrompt="no" />
+
+    <UI>
+      <ui:WixUI Id="WixUI_Minimal" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
+    </UI>
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.Payload)\License.rtf" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Запустить VlessClient" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#AppExe]" />
+    <CustomAction Id="LaunchApplication" BinaryRef="Wix4UtilCA_X64" DllEntry="WixShellExec" Impersonate="yes" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="VlessClient">
-        <Component Id="DesktopApp">
-          <File Id="DesktopExe" Source="$(var.Payload)\VlessClient.exe">
-            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="VlessClient"
-                      Description="VlessClient" WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+        <Component Id="App">
+          <File Id="AppExe" Source="$(var.Payload)\VlessClient.exe" KeyPath="yes">
+            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="VlessClient" Description="VPN-клиент VlessClient"
+                      WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="no" />
+            <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="VlessClient" Description="VPN-клиент VlessClient"
+                      WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" Advertise="no" />
           </File>
+          <ServiceInstall Id="Service" Name="VlessClient" DisplayName="VlessClient VPN"
+                          Description="Держит VPN-подключение VlessClient. Управляется из окна VlessClient."
+                          Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="--service" Vital="yes">
+            <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="restart"
+                                RestartServiceDelayInSeconds="5" ResetPeriodInDays="1" />
+          </ServiceInstall>
+          <ServiceControl Id="ServiceControl" Name="VlessClient" Start="install" Stop="both" Remove="both" Wait="yes" />
+          <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="VlessClient"
+                         Type="string" Value="&quot;[#AppExe]&quot; --tray" />
         </Component>
-        <Component Id="Cli">
-          <File Source="$(var.Payload)\vpn.cmd" />
-          <Environment Id="CliPath" Name="Path" Value="[INSTALLFOLDER]" Part="last" System="yes" Action="set" />
-        </Component>
-        <Component Id="DesktopConfig"><File Source="$(var.Payload)\VlessClient.exe.config" /></Component>
-        <Component Id="Control"><File Id="ControlScript" Source="$(var.Payload)\vpn.ps1" /></Component>
-        <Component Id="SettingsTemplate"><File Source="$(var.Payload)\settings.example.json" /></Component>
-        <Component Id="InstallMarker"><File Source="$(var.Payload)\installed.marker" /></Component>
-        <Component Id="Cleanup"><File Id="CleanupScript" Source="$(var.Payload)\StopInstalledClient.ps1" /></Component>
+        <Component Id="AppConfig"><File Source="$(var.Payload)\VlessClient.exe.config" /></Component>
         <Component Id="License"><File Source="$(var.Payload)\LICENSE" /></Component>
         <Component Id="ThirdParty"><File Source="$(var.Payload)\THIRD-PARTY.txt" /></Component>
         <Directory Id="CoreFolder" Name="bin">
           <Component Id="SingBox"><File Source="$(var.Payload)\bin\sing-box.exe" /></Component>
+          <Component Id="Cronet"><File Source="$(var.Payload)\bin\libcronet.dll" /></Component>
           <Component Id="Xray"><File Source="$(var.Payload)\bin\xray.exe" /></Component>
           <Component Id="GeoIp"><File Source="$(var.Payload)\bin\geoip.dat" /></Component>
           <Component Id="GeoSite"><File Source="$(var.Payload)\bin\geosite.dat" /></Component>
-          <Component Id="Cronet"><File Source="$(var.Payload)\bin\libcronet.dll" /></Component>
           <Component Id="SingBoxLicense"><File Source="$(var.Payload)\bin\sing-box-LICENSE.txt" /></Component>
           <Component Id="XrayLicense"><File Source="$(var.Payload)\bin\Xray-core-LICENSE.txt" /></Component>
           <Component Id="GplLicense"><File Source="$(var.Payload)\bin\GPL-3.0.txt" /></Component>
@@ -42,45 +64,27 @@
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
-    <Feature Id="Complete" Title="VlessClient">
-      <ComponentGroupRef Id="PayloadFiles" />
-    </Feature>
+    <StandardDirectory Id="DesktopFolder" />
 
-    <!-- On upgrade preserve the user's task definition; its path is stable across versions. -->
-    <SetProperty Id="StopInstalledClient"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#CleanupScript]&quot;"
-                 Before="StopInstalledClient" Sequence="execute" Condition="Installed AND REMOVE=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
-    <SetProperty Id="RemoveInstalledClient"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#CleanupScript]&quot; -RemoveAutostart"
-                 Before="RemoveInstalledClient" Sequence="execute" Condition="Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
-    <CustomAction Id="StopInstalledClient" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec"
-                  Execute="deferred" Impersonate="no" Return="check" />
-    <CustomAction Id="RemoveInstalledClient" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec"
-                  Execute="deferred" Impersonate="no" Return="check" />
-    <InstallExecuteSequence>
-      <Custom Action="StopInstalledClient" Before="RemoveFiles" Condition="Installed AND REMOVE=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
-      <Custom Action="RemoveInstalledClient" After="StopInstalledClient" Condition="Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
-    </InstallExecuteSequence>
-  </Package>
-  <Fragment>
-    <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
-      <ComponentRef Id="DesktopApp" />
-      <ComponentRef Id="Cli" />
-      <ComponentRef Id="DesktopConfig" />
-      <ComponentRef Id="Control" />
-      <ComponentRef Id="SettingsTemplate" />
-      <ComponentRef Id="InstallMarker" />
-      <ComponentRef Id="Cleanup" />
+    <Feature Id="Complete" Title="VlessClient">
+      <ComponentRef Id="App" />
+      <ComponentRef Id="AppConfig" />
       <ComponentRef Id="License" />
       <ComponentRef Id="ThirdParty" />
       <ComponentRef Id="SingBox" />
+      <ComponentRef Id="Cronet" />
       <ComponentRef Id="Xray" />
       <ComponentRef Id="GeoIp" />
       <ComponentRef Id="GeoSite" />
-      <ComponentRef Id="Cronet" />
       <ComponentRef Id="SingBoxLicense" />
       <ComponentRef Id="XrayLicense" />
       <ComponentRef Id="GplLicense" />
-    </ComponentGroup>
-  </Fragment>
+    </Feature>
+
+    <!-- Full uninstall (not an upgrade): remove settings, logs and runtime files from C:\ProgramData\VlessClient. -->
+    <CustomAction Id="CleanupData" FileRef="AppExe" ExeCommand="--cleanup" Execute="deferred" Impersonate="no" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="CleanupData" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
 </Wix>
