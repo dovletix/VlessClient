@@ -131,6 +131,9 @@ namespace VlessClient.Core
             }
             rules.Add(new JObj().Set("ip_is_private", true).Set("outbound", "direct"));
 
+            // "Selected programs" mode: everything ProxiFyre hands over belongs to a program with the VPN rule.
+            if (s.Mode == "apps") AddRoute(rules, new JObj().Set("inbound", new List<object> { "apps-in" }), "proxy", q);
+
             AddRoute(rules, RuleSet("apps-block"), "block", false);
             AddRoute(rules, RuleSet("apps-direct"), "direct", q);
             AddRoute(rules, RuleSet("apps-proxy"), "proxy", q);
@@ -156,6 +159,8 @@ namespace VlessClient.Core
                 .Select(tag => (object)new JObj().Set("type", "local").Set("tag", tag).Set("format", "source").Set("path", Path.Combine(Paths.RulesDir, tag + ".json"))).ToList();
 
             var inbounds = new List<object> { new JObj().Set("type", "mixed").Set("tag", "mixed-in").Set("listen", "127.0.0.1").Set("listen_port", s.ProxyPort) };
+            if (s.Mode == "apps")
+                inbounds.Add(new JObj().Set("type", "socks").Set("tag", "apps-in").Set("listen", "127.0.0.1").Set("listen_port", s.AppsPort));
             if (tun)
             {
                 var addr = new List<string> { s.TunAddress4 };

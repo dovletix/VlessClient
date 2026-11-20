@@ -298,7 +298,11 @@
         <TabItem Header="Режим">
           <StackPanel Margin="12">
             <TextBlock Text="Что идёт через VPN" Style="{StaticResource H2}" />
-            <RadioButton x:Name="ModeTun" GroupName="mode" Content="Весь компьютер (рекомендуется)" Click="ModeClick" Tag="tun" />
+            <RadioButton x:Name="ModeTun" GroupName="mode" Content="Весь компьютер — туннель (рекомендуется)" Click="ModeClick" Tag="tun" />
+            <TextBlock Style="{StaticResource Hint}" Margin="22,0,0,8" Text="Весь трафик проходит через VlessClient, правила решают, что идёт через VPN, а что напрямую." />
+            <RadioButton x:Name="ModeApps" GroupName="mode" Content="Только выбранные программы — без туннеля" Click="ModeClick" Tag="apps" />
+            <TextBlock x:Name="AppsInfo" Style="{StaticResource Hint}" Margin="22,0,0,8"
+                       Text="Через VPN идут только программы с правилом «через VPN» (вкладка «Программы»), остальные VlessClient вообще не трогает. При первом включении скачает с GitHub и установит ProxiFyre и драйвер Windows Packet Filter. Некоторые античиты (FACEIT, Vanguard) не любят такие драйверы." />
             <RadioButton x:Name="ModeProxy" GroupName="mode" Content="Только программы, настроенные на локальный прокси" Click="ModeClick" Tag="proxy" />
             <TextBlock x:Name="ProxyInfo" Style="{StaticResource Hint}" Margin="22,2,0,14" />
             <TextBlock Text="Сайты и программы без отдельного правила" Style="{StaticResource H2}" />

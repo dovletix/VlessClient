@@ -145,7 +145,8 @@ namespace VlessClient.Service
             {
                 case "mode":
                     {
-                        var v = r.Str("value") == "proxy" ? "proxy" : "tun";
+                        var raw = r.Str("value");
+                        var v = raw == "proxy" || raw == "apps" ? raw : "tun";
                         return engine.Change(s => s.Mode = v, true);
                     }
                 case "default":

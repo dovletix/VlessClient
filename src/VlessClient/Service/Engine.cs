@@ -36,6 +36,7 @@ namespace VlessClient.Service
         private DateTime nextSubCheck = DateTime.MinValue;
         private List<ProbeResult> lastProbe;
         public readonly Updater Updater = new Updater();
+        public readonly AppsInterceptor Interceptor = new AppsInterceptor();
 
         public static bool IsElevated
         {
@@ -81,6 +82,10 @@ namespace VlessClient.Service
                     .Set("node", mainNode?.Name ?? "")
                     .Set("spare", spareNode?.Name ?? "")
                     .Set("tun", tunActive)
+                    .Set("mode", settings.Mode)
+                    .Set("apps_active", Interceptor.Running)
+                    .Set("apps_count", Interceptor.AppCount)
+                    .Set("apps_installed", AppsInterceptor.IsInstalled)
                     .Set("since", state == State.On ? since.ToString("s") : "")
                     .Set("warnings", warnings.ToList())
                     .Set("version", Updater.CurrentVersion.ToString(3))
@@ -209,7 +214,17 @@ namespace VlessClient.Service
                 SaveSettings();
             }
             try { SingBoxConfig.WriteUserRuleSets(settings); } catch (Exception e) { return "Не удалось записать правила: " + e.Message; }
-            if (needsReconnect && settings.Enabled) BeginConnect();
+            if (needsReconnect && settings.Enabled) { BeginConnect(); return null; }
+            // "selected programs" mode: the list of programs lives in ProxiFyre's config
+            State st; lock (gate) st = state;
+            if (!needsReconnect && settings.Mode == "apps" && st == State.On)
+            {
+                var s = SettingsCopy();
+                var err = Interceptor.Apply(s);
+                if (err != null) return "Не удалось применить список программ: " + err;
+                SetState(State.On, Interceptor.AppCount > 0 ? "VPN включён для выбранных программ: " + Interceptor.AppCount
+                                                            : "VPN включён, но ни одной программе не задано «через VPN»");
+            }
             return null;
         }
 
@@ -311,6 +326,16 @@ namespace VlessClient.Service
                                 mainNode = main; spareNode = spare; tunActive = tun; crashCount = 0;
                                 settings.LastGoodNode = main.Name; SaveSettings();
                             }
+                            if (s.Mode == "apps")
+                            {
+                                // the VPN works; now hand the selected programs over to it
+                                SetState(State.Connecting, "Включаю перехват выбранных программ…");
+                                var aerr = await Interceptor.StartAsync(s, text => SetState(State.Connecting, text)).ConfigureAwait(false);
+                                if (aerr != null) { Fail("Не удалось включить режим «только выбранные программы»: " + aerr); return; }
+                                SetState(State.On, Interceptor.AppCount > 0 ? "VPN включён для выбранных программ: " + Interceptor.AppCount
+                                                                            : "VPN включён, но ни одной программе не задано «через VPN»");
+                                return;
+                            }
                             SetState(State.On, tun ? "VPN включён" : "VPN включён (только локальный прокси)");
                             return;
                         }
@@ -341,7 +366,8 @@ namespace VlessClient.Service
         private string StartCores(Settings s, List<Node> all, Node main, Node spare, bool tun)
         {
             if (!File.Exists(Paths.XrayExe) || !File.Exists(Paths.SingBoxExe)) return "файлы ядер не найдены в " + Paths.BinDir;
-            foreach (var port in new[] { s.ProxyPort, s.XrayPort, s.ApiPort })
+            var ports = s.Mode == "apps" ? new[] { s.ProxyPort, s.XrayPort, s.ApiPort, s.AppsPort } : new[] { s.ProxyPort, s.XrayPort, s.ApiPort };
+            foreach (var port in ports)
                 if (!NetInfo.IsPortFree(port)) return "порт " + port + " занят другой программой";
 
             var xrayCfg = Path.Combine(Paths.RuntimeDir, "xray.json");
@@ -380,6 +406,8 @@ namespace VlessClient.Service
 
         private void StopCores()
         {
+            // first release the selected programs, so that they never point at a proxy that is gone
+            if (Interceptor.Running) Interceptor.Stop();
             foreach (var p in new[] { singbox, xray })
             {
                 if (p == null) continue;
@@ -471,6 +499,11 @@ namespace VlessClient.Service
                     var s = SettingsCopy();
                     var tun = s.Mode == "tun" && IsElevated;
                     var err = StartCores(s, all, main, spare, tun);
+                    if (err == null && s.Mode == "apps")
+                    {
+                        var aerr = Interceptor.Apply(s);
+                        if (aerr != null) err = aerr;
+                    }
                     if (err != null) { Log.Write("supervisor: restart failed: " + err); StopCores(); lock (gate) nextRetry = DateTime.Now.AddSeconds(10); SetState(State.Error, "Связь прервалась, переподключаюсь…", err); }
                     else lock (gate) tunActive = tun;
                 }
@@ -497,6 +530,7 @@ namespace VlessClient.Service
             {
                 sb.AppendLine($"state: {state}  message: {message}  error: {error}");
                 sb.AppendLine($"node: {mainNode?.Index} {mainNode?.Name}  spare: {spareNode?.Index} {spareNode?.Name}  tun: {tunActive}");
+                sb.AppendLine($"apps mode: running={Interceptor.Running} programs={Interceptor.AppCount} components installed={AppsInterceptor.IsInstalled} last error: {Interceptor.LastError}");
                 foreach (var w in warnings) sb.AppendLine("warning: " + w);
             }
             string host = ""; try { host = new Uri(s.SubscriptionUrl).Host; } catch { }

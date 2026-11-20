@@ -232,7 +232,12 @@ namespace VlessClient.Ui
             {
                 case "on":
                     brush = GreenBrush; title = "VPN включён";
-                    hint = "Сервер: " + status.Str("node") + (status.Bool("tun") ? "" : "\nТолько локальный прокси — системный туннель недоступен");
+                    hint = "Сервер: " + status.Str("node");
+                    if (status.Str("mode") == "apps")
+                        hint += status.Int("apps_count") > 0
+                            ? "\nЧерез VPN идут только выбранные программы: " + status.Int("apps_count")
+                            : "\nНи одной программе не задано «через VPN» — откройте «Для продвинутых → Программы»";
+                    else if (!status.Bool("tun")) hint += "\nТолько локальный прокси — системный туннель недоступен";
                     break;
                 case "connecting":
                     brush = AmberBrush; title = "Подключение…"; hint = status.Str("message");
@@ -397,11 +402,13 @@ namespace VlessClient.Ui
                 DirectList.ItemsSource = rules.Strings("direct_domains").Concat(rules.Strings("direct_ips")).ToList();
                 ProxyList.ItemsSource = rules.Strings("proxy_domains").Concat(rules.Strings("proxy_ips")).ToList();
                 AutoExcludeInput.Text = settings.Str("auto_exclude");
-                ModeTun.IsChecked = settings.Str("mode") != "proxy";
-                ModeProxy.IsChecked = settings.Str("mode") == "proxy";
+                var mode = settings.Str("mode", "tun");
+                ModeTun.IsChecked = mode == "tun";
+                ModeApps.IsChecked = mode == "apps";
+                ModeProxy.IsChecked = mode == "proxy";
                 DefaultProxy.IsChecked = settings.Str("default") != "direct";
                 DefaultDirect.IsChecked = settings.Str("default") == "direct";
-                ProxyInfo.Text = "Локальный прокси (SOCKS5 и HTTP): 127.0.0.1:" + settings.Obj("ports").Int("proxy") + " — работает в обоих режимах.";
+                ProxyInfo.Text = "Локальный прокси (SOCKS5 и HTTP): 127.0.0.1:" + settings.Obj("ports").Int("proxy") + " — работает во всех режимах.";
             }
             finally { suppress = false; }
         }

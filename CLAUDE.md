@@ -24,7 +24,21 @@ Windows VPN client for VLESS subscriptions, aimed at non-technical users (one bi
 - Rule changes (apps, domains) are written to rule-set files that sing-box hot-reloads; mode / default route / node / Russia switch reconnect.
 - IPv6 on the tunnel only when a physical adapter has a real global IPv6 address. Teredo (2001:0::/32 on a Tunnel-type interface) and 6to4 do not count: an IPv6 route on the tunnel without real IPv6 makes direct IPv6 connections hang.
 - Updates: manual by default (button in Settings); `auto_update` makes the service check every 12 h and install. The service downloads the MSI from this repo's releases only, checks the SHA-256 digest and runs `msiexec /qn`; the window notices status "installing", schedules its own restart and exits; the MSI closes running copies (util:CloseApplication) so no reboot is needed.
-- Ports (localhost): mixed proxy 12080, xray SOCKS 12081, Clash API 12090 (secret in settings), probe ports 12200+.
+- Ports (localhost): mixed proxy 12080, xray SOCKS 12081, SOCKS `apps-in` 12082 (apps mode only), Clash API 12090 (secret in settings), probe ports 12200+.
+
+## "Selected programs only" mode (`mode: "apps"`)
+
+- No TUN. `Service/AppsInterceptor.cs` drives ProxiFyre (wiresock, AGPL, on the Windows Packet Filter NDIS driver `NDISRD`): writes `app-config.json` next to `ProxiFyre.exe` (appNames = exe files of apps with `vpn: true`, endpoint 127.0.0.1:12082, TCP+UDP, IPv4 only so IPv6 is blocked instead of leaking, our xray / sing-box / VlessClient.exe excluded by full path) and restarts `ProxiFyreService`. sing-box routes inbound `apps-in` to `proxy`.
+- Components are not bundled (AGPL, kernel driver only for users who want it): on first use the service downloads the pinned driver MSI and ProxiFyre MSI from their GitHub releases through our own local proxy, checks SHA-256 and installs them silently; missing Visual C++ is fetched from Microsoft and checked by its Authenticode signature. Products it installed are recorded in `components\installed-by-vlessclient.json`; `--cleanup` (uninstall) stops ProxiFyre and removes those products with a detached `msiexec /x` after our own MSI transaction ends.
+- ProxiFyre's standalone MSI re-checks ucrtbase.dll via AppSearch and misses it on some Windows builds; we check the same files ourselves (`VcRuntimeOk`) and pass `BURNMSIINSTALL=1 PROXIFYRE_SETUP_CHAIN=1`, the markers its own setup bundle passes (documented in its docs/installer.md).
+- Kernel drivers are not in `ServiceController.GetServices()`; check `HKLM\SYSTEM\CurrentControlSet\Services\NDISRD` instead.
+- Every core stop stops ProxiFyre first, so selected programs never point at a dead proxy. App-rule changes rewrite the config and restart ProxiFyre (≈2 s), no reconnect.
+- Rejected: WinDivert. Microsoft Defender (PUA protection) deletes even the official WinDivert release as `Misleading:Win32/Malgent!AMTB`; bundling it would get the whole MSI quarantined.
+- Clash API shows all apps-mode traffic as coming from ProxiFyre.exe; the UI labels it "Выбранные программы".
+
+## Testing on the developer's machine
+
+- The developer's own VPN client must keep running during tests: the Claude app reaches the API only through it. Run the new engine side by side with `--console`, `VLESSCLIENT_DATA` / `VLESSCLIENT_BIN` and its own ports, and tell test traffic apart through the test engine's Clash API (`metadata.type`, e.g. `socks/apps-in`), not by exit IP.
 
 ## Constraints
 
