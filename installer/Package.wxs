@@ -15,6 +15,15 @@
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/dovletix/VlessClient" />
     <Property Id="ARPNOREPAIR" Value="1" />
 
+    <!-- Smart App Control (Windows 11) blocks unsigned programs: the service would fail to start with the cryptic error 1920
+         and the whole install would roll back. Say what is going on before anything is installed. Raw DWORD reads as "#1". -->
+    <Property Id="SMARTAPPCONTROL">
+      <RegistrySearch Id="SmartAppControlState" Root="HKLM" Key="SYSTEM\CurrentControlSet\Control\CI\Policy"
+                      Name="VerifiedAndReputablePolicyState" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR NOT (SMARTAPPCONTROL = &quot;#1&quot;)"
+            Message="Windows не даст запустить VlessClient: на этом компьютере включено «Интеллектуальное управление приложениями» (Smart App Control). Оно пропускает только программы с платной цифровой подписью, а у VlessClient её нет. Чтобы установить VlessClient, выключите его: Пуск > Безопасность Windows > Управление приложениями/браузером > Параметры интеллектуального управления приложениями > Выкл. Затем запустите установку снова. Обычная защита Windows (антивирус Microsoft Defender) при этом продолжит работать." />
+
     <!-- The window (and, on upgrade, the old service process) holds VlessClient.exe open: close it so no reboot is needed. -->
     <util:CloseApplication Id="CloseVlessClient" Target="VlessClient.exe" TerminateProcess="0" RebootPrompt="no" />
 

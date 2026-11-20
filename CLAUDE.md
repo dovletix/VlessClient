@@ -27,6 +27,11 @@ Windows VPN client for VLESS subscriptions, aimed at non-technical users (one bi
 - Updates: manual by default (button in Settings); `auto_update` makes the service check every 12 h and install. The service downloads the MSI from this repo's releases only, checks the SHA-256 digest and runs `msiexec /qn`; the window notices status "installing", schedules its own restart and exits; the MSI closes running copies (util:CloseApplication) so no reboot is needed.
 - Ports (localhost): mixed proxy 12080, xray SOCKS 12081, Clash API 12090 (secret in settings), probe ports 12200+.
 
+## Smart App Control
+
+- Windows 11 Smart App Control (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy` `VerifiedAndReputablePolicyState`: 0 off, 1 on, 2 evaluation) blocks our unsigned VlessClient.exe: SCM error 7000 "application control policy has blocked this file", CodeIntegrity 3077, and Windows Installer reports the misleading error 1920 ("insufficient privileges to start system services") and rolls back with 1603.
+- `installer/Package.wxs` has a launch condition that refuses to install while the state is 1 and tells the user how to switch it off. The only real fix is code signing — and xray / sing-box are unsigned upstream, so signing only our exe may not be enough.
+
 ## Removed modes (history)
 
 - 2.0 had a "local proxy only" mode and 2.1.0 a "selected programs only" mode without TUN (ProxiFyre, wiresock, AGPL, on the Windows Packet Filter NDIS driver `NDISRD`). Both were removed in 2.2.0: they existed because the tunnel looked like a speed bottleneck, and it was not — the cap was the line. sing-box carries ~670 Mbit/s of direct traffic through the TUN on about one core of a desktop CPU. Do not bring them back for speed reasons.

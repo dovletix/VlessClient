@@ -21,15 +21,18 @@ namespace VlessClient.Service
         private static string Dir => Path.Combine(Paths.DataDir, "components");
         private static string Marker => Path.Combine(Dir, "installed-by-vlessclient.json");
 
-        /// <summary>Service start: stops ProxiFyre at once, uninstalls in the background (our own upgrade may still be running).</summary>
+        /// <summary>
+        /// Service start: stops ProxiFyre, then uninstalls (our own upgrade may still be running). All of it in the background:
+        /// the service must report "running" within 30 s, or Windows Installer fails the upgrade with error 1920.
+        /// </summary>
         public static void RemoveInBackground()
         {
             if (!File.Exists(Marker)) return;
-            StopProxiFyre();
             Task.Run(async () =>
             {
                 try
                 {
+                    StopProxiFyre();
                     await Task.Delay(20000).ConfigureAwait(false);
                     var left = new List<string>();
                     foreach (var p in Ordered(Load()))
