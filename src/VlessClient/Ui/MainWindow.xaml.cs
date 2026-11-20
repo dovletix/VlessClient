@@ -303,7 +303,8 @@ namespace VlessClient.Ui
             try
             {
                 var t = Clipboard.ContainsText() ? Clipboard.GetText().Trim() : "";
-                if (t.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !t.Contains(" ") && t.Length < 500) SetupUrl.Text = t;
+                if ((t.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !t.Contains(" ") && t.Length < 500) ||
+                    (t.StartsWith("vless://", StringComparison.OrdinalIgnoreCase) && t.Length < 200000)) SetupUrl.Text = t;
             }
             catch { }
         }
@@ -380,8 +381,11 @@ namespace VlessClient.Ui
                 var sub = settings.Obj("subscription");
                 string host = ""; try { host = new Uri(sub.Str("url")).Host; } catch { }
                 var subTime = status?.Str("subscription_time") ?? "";
-                SubInfo.Text = "Сервер подписки: " + host + "\nСерверов в подписке: " + (status?.Objects("nodes").Count ?? 0) +
-                               (subTime.Length > 0 && DateTime.TryParse(subTime, out var t) ? "\nОбновлена: " + t.ToString("dd.MM.yyyy HH:mm") : "");
+                var count = status?.Objects("nodes").Count ?? 0;
+                SubInfo.Text = sub.Bool("inline")
+                    ? "Серверы вставлены вручную: " + count + "\nЧтобы обновить их, нажмите «Изменить ссылку»."
+                    : "Сервер подписки: " + host + "\nСерверов в подписке: " + count +
+                      (subTime.Length > 0 && DateTime.TryParse(subTime, out var t) ? "\nОбновлена: " + t.ToString("dd.MM.yyyy HH:mm") : "");
                 RuDirectBox.IsChecked = settings.Obj("ru_direct").Bool("enabled", true);
                 AutoUpdateBox.IsChecked = settings.Bool("auto_update");
                 lastNodesKey = "";

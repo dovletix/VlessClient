@@ -134,6 +134,22 @@ namespace VlessClient.Service
         public async Task<string> SetSubscriptionAsync(string url, bool insecure)
         {
             url = (url ?? "").Trim();
+            // Fallback for networks where the subscription server is unreachable: the servers themselves, pasted as vless:// lines.
+            if (url.IndexOf("vless://", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var list = Subscription.Decode(url);
+                if (list == null || !list.Split('\n').Any(l => Node.Parse(l) != null)) return "Не нашёл ни одного сервера vless:// во вставленном тексте.";
+                File.WriteAllText(Paths.SubscriptionCache, list, Paths.Utf8);
+                lock (gate)
+                {
+                    settings.SubscriptionUrl = ""; settings.InlineNodes = true; settings.LastGoodNode = ""; settings.Enabled = true;
+                    SaveSettings();
+                    nodes = Subscription.LoadCached();
+                }
+                Log.Write($"subscription: {nodes.Count} servers pasted directly");
+                BeginConnect();
+                return null;
+            }
             if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || (u.Scheme != "https" && u.Scheme != "http"))
                 return "Это не похоже на ссылку подписки. Она должна начинаться с https://";
             var test = settings.Clone();
@@ -157,7 +173,7 @@ namespace VlessClient.Service
             File.WriteAllText(Paths.SubscriptionCache, body, Paths.Utf8);
             lock (gate)
             {
-                settings.SubscriptionUrl = url; settings.InsecureTls = insecure; settings.LastGoodNode = "";
+                settings.SubscriptionUrl = url; settings.InlineNodes = false; settings.InsecureTls = insecure; settings.LastGoodNode = "";
                 settings.Enabled = true;
                 SaveSettings();
                 nodes = Subscription.LoadCached();
@@ -170,6 +186,7 @@ namespace VlessClient.Service
         public async Task<string> RefreshSubscriptionAsync()
         {
             if (!settings.HasSubscription) return "Подписка не задана";
+            if (!settings.CanDownload) return "Серверы были вставлены вручную, скачивать нечего. Чтобы обновить их, нажмите «Изменить ссылку» и вставьте новые.";
             try
             {
                 var body = await Subscription.FetchAsync(settings).ConfigureAwait(false);
@@ -233,7 +250,7 @@ namespace VlessClient.Service
                 if (!s.HasSubscription) { SetState(State.NoSubscription, "Нужна ссылка на подписку"); return; }
 
                 SetState(State.Connecting, "Загружаю список серверов…");
-                if (nodes.Count == 0 || (DateTime.Now - Subscription.CacheTime).TotalHours > s.UpdateHours)
+                if (s.CanDownload && (nodes.Count == 0 || (DateTime.Now - Subscription.CacheTime).TotalHours > s.UpdateHours))
                 {
                     try
                     {
@@ -243,7 +260,12 @@ namespace VlessClient.Service
                     catch (Exception e) { Log.Write("subscription: fetch failed: " + Flatten(e)); }
                 }
                 List<Node> all; lock (gate) all = nodes.ToList();
-                if (all.Count == 0) { Fail("Не удалось загрузить список серверов. Проверьте интернет и ссылку на подписку."); return; }
+                if (all.Count == 0)
+                {
+                    Fail("Не удалось загрузить список серверов: сервер подписки не отвечает. Возможно, ваш интернет-провайдер его не пропускает. " +
+                         "Попросите того, кто выдал подписку, прислать сами серверы (строки vless://) и вставьте их через «Настройки → Изменить ссылку».");
+                    return;
+                }
                 if (ct.IsCancellationRequested) return;
 
                 SingBoxConfig.WriteGeoRuleSets(s);
@@ -427,7 +449,7 @@ namespace VlessClient.Service
                 {
                     nextSubCheck = DateTime.Now.AddHours(1);
                     var s = SettingsCopy();
-                    if (s.HasSubscription && st == State.On && (DateTime.Now - Subscription.CacheTime).TotalHours > s.UpdateHours)
+                    if (s.CanDownload && st == State.On && (DateTime.Now - Subscription.CacheTime).TotalHours > s.UpdateHours)
                         Task.Run(RefreshSubscriptionAsync);
                     if (s.AutoUpdate) Task.Run(() => Updater.AutoUpdateTickAsync());
                 }

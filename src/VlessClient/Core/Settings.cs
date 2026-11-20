@@ -17,6 +17,7 @@ namespace VlessClient.Core
     {
         // subscription
         public string SubscriptionUrl = "";
+        public bool InlineNodes;             // servers were pasted as vless:// lines instead of a link (nothing to download)
         public bool InsecureTls;
         public int UpdateHours = 12;
 
@@ -79,7 +80,8 @@ namespace VlessClient.Core
 
         public string LogLevel = "warn";
 
-        public bool HasSubscription => !string.IsNullOrWhiteSpace(SubscriptionUrl);
+        public bool HasSubscription => InlineNodes || !string.IsNullOrWhiteSpace(SubscriptionUrl);
+        public bool CanDownload => !InlineNodes && !string.IsNullOrWhiteSpace(SubscriptionUrl);
 
         // ------------------------------------------------------------------ load / save
 
@@ -109,7 +111,7 @@ namespace VlessClient.Core
         public JObj ToJson()
         {
             return new JObj()
-                .Set("subscription", new JObj().Set("url", SubscriptionUrl).Set("insecure_tls", InsecureTls).Set("update_hours", UpdateHours))
+                .Set("subscription", new JObj().Set("url", SubscriptionUrl).Set("inline", InlineNodes).Set("insecure_tls", InsecureTls).Set("update_hours", UpdateHours))
                 .Set("enabled", Enabled)
                 .Set("node", Node)
                 .Set("auto_exclude", AutoExclude)
@@ -135,7 +137,7 @@ namespace VlessClient.Core
         {
             var s = new Settings();
             var sub = j.Obj("subscription");
-            if (sub != null) { s.SubscriptionUrl = sub.Str("url"); s.InsecureTls = sub.Bool("insecure_tls"); s.UpdateHours = Math.Max(1, sub.Int("update_hours", 12)); }
+            if (sub != null) { s.SubscriptionUrl = sub.Str("url"); s.InlineNodes = sub.Bool("inline"); s.InsecureTls = sub.Bool("insecure_tls"); s.UpdateHours = Math.Max(1, sub.Int("update_hours", 12)); }
             s.Enabled = j.Bool("enabled");
             s.Node = j.Str("node", "auto");
             s.AutoExclude = j.Str("auto_exclude");

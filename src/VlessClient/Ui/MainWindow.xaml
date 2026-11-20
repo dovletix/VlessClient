@@ -81,8 +81,10 @@
         <TextBlock Style="{StaticResource Hint}" FontSize="15" Margin="0,0,0,20"
                    Text="Чтобы включить VPN, нужна ссылка на подписку. Её даёт тот, кто выдал вам доступ к VPN. Скопируйте ссылку и вставьте её сюда." />
         <TextBlock Text="Ссылка на подписку" FontWeight="SemiBold" Margin="0,0,0,6" />
-        <TextBox x:Name="SetupUrl" FontSize="14" Height="40" AutomationProperties.Name="Ссылка на подписку" />
+        <TextBox x:Name="SetupUrl" FontSize="14" MinHeight="40" MaxHeight="130" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                 AutomationProperties.Name="Ссылка на подписку" />
         <Button Content="Вставить из буфера обмена" Style="{StaticResource Link}" HorizontalAlignment="Left" Margin="0,6,0,0" Click="PasteClick" />
+        <TextBlock Style="{StaticResource Hint}" Margin="0,6,0,0" Text="Если ссылка не загружается, можно вставить сами серверы — строки, начинающиеся с vless://" />
         <Button x:Name="SetupButton" Content="Подключить" Style="{StaticResource Primary}" FontSize="17" Height="50" Margin="0,22,0,0" Click="SetupClick" IsDefault="True" />
         <TextBlock x:Name="SetupStatus" TextWrapping="Wrap" Margin="0,14,0,0" FontSize="14" />
         <Button x:Name="SetupCancel" Content="Отмена" Style="{StaticResource Link}" HorizontalAlignment="Center" Margin="0,16,0,0" Click="BackClick" Visibility="Collapsed" />
