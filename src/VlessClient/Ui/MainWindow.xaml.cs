@@ -233,11 +233,7 @@ namespace VlessClient.Ui
                 case "on":
                     brush = GreenBrush; title = "VPN включён";
                     hint = "Сервер: " + status.Str("node");
-                    if (status.Str("mode") == "apps")
-                        hint += status.Int("apps_count") > 0
-                            ? "\nЧерез VPN идут только выбранные программы: " + status.Int("apps_count")
-                            : "\nНи одной программе не задано «через VPN» — откройте «Для продвинутых → Программы»";
-                    else if (!status.Bool("tun")) hint += "\nТолько локальный прокси — системный туннель недоступен";
+                    if (!status.Bool("tun")) hint += "\nТолько локальный прокси — системный туннель недоступен";
                     break;
                 case "connecting":
                     brush = AmberBrush; title = "Подключение…"; hint = status.Str("message");
@@ -402,13 +398,9 @@ namespace VlessClient.Ui
                 DirectList.ItemsSource = rules.Strings("direct_domains").Concat(rules.Strings("direct_ips")).ToList();
                 ProxyList.ItemsSource = rules.Strings("proxy_domains").Concat(rules.Strings("proxy_ips")).ToList();
                 AutoExcludeInput.Text = settings.Str("auto_exclude");
-                var mode = settings.Str("mode", "tun");
-                ModeTun.IsChecked = mode == "tun";
-                ModeApps.IsChecked = mode == "apps";
-                ModeProxy.IsChecked = mode == "proxy";
                 DefaultProxy.IsChecked = settings.Str("default") != "direct";
                 DefaultDirect.IsChecked = settings.Str("default") == "direct";
-                ProxyInfo.Text = "Локальный прокси (SOCKS5 и HTTP): 127.0.0.1:" + settings.Obj("ports").Int("proxy") + " — работает во всех режимах.";
+                ProxyInfo.Text = "Локальный прокси (SOCKS5 и HTTP): 127.0.0.1:" + settings.Obj("ports").Int("proxy") + " — для программ, которые умеют работать через прокси.";
             }
             finally { suppress = false; }
         }
@@ -650,12 +642,6 @@ namespace VlessClient.Ui
         {
             await Send(new JObj().Set("cmd", "set_option").Set("key", "auto_exclude").Set("value", AutoExcludeInput.Text.Trim()));
             await LoadSettings();
-        }
-
-        private async void ModeClick(object sender, RoutedEventArgs e)
-        {
-            if (suppress) return;
-            await Send(new JObj().Set("cmd", "set_option").Set("key", "mode").Set("value", (string)((RadioButton)sender).Tag));
         }
 
         private async void DefaultClick(object sender, RoutedEventArgs e)

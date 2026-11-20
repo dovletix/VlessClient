@@ -101,8 +101,6 @@ namespace VlessClient.Ui
                         var cut = path.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
                         if (cut > 0) path = path.Substring(0, cut + 4);
                         var exe = path.Length > 0 ? System.IO.Path.GetFileName(path) : "(система)";
-                        // "selected programs" mode: sing-box sees ProxiFyre, which carries the traffic of all selected programs
-                        if (exe.Equals("ProxiFyre.exe", StringComparison.OrdinalIgnoreCase)) exe = "Выбранные программы (через ProxiFyre)";
                         var chains = c.ContainsKey("chains") && c["chains"] is IEnumerable ch ? ch.Cast<object>().Select(x => x?.ToString()).ToList() : new List<string>();
                         k = new Conn { Key = exe.ToLowerInvariant(), Vpn = !chains.Contains("direct"), Host = meta.Str("host").Length > 0 ? meta.Str("host") : meta.Str("destinationIP") };
                         // connections that were already open before the first sample: count only what they transfer from now on

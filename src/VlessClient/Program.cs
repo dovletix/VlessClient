@@ -53,8 +53,8 @@ namespace VlessClient
         /// <summary>Run by the uninstaller (not on upgrade): removes settings, logs and anything the cores left behind.</summary>
         private static int Cleanup()
         {
-            // ProxiFyre and its driver, if VlessClient installed them (reads the marker before the data folder goes away)
-            try { AppsInterceptor.UninstallComponentsDetached(); } catch { }
+            // ProxiFyre and its driver, if version 2.1.0 installed them (reads the marker before the data folder goes away)
+            try { OldComponents.RemoveDetached(); } catch { }
             foreach (var name in new[] { "sing-box", "xray" })
                 foreach (var p in Process.GetProcessesByName(name))
                 {

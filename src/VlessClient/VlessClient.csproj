@@ -11,7 +11,7 @@
     <StartupObject>VlessClient.Program</StartupObject>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>2.1.0</Version>
+    <Version>2.2.0</Version>
     <Product>VlessClient</Product>
     <Company>VlessClient contributors</Company>
     <Copyright>MIT License</Copyright>

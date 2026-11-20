@@ -26,7 +26,6 @@ namespace VlessClient.Core
         public string Node = "auto";         // "auto", node number or part of its name
         public string AutoExclude = "";      // regex on node names that "auto" must never use
         public string LastGoodNode = "";     // name of the node that worked last time (auto starts with it)
-        public string Mode = "tun";          // tun = whole computer, apps = only selected programs (ProxiFyre), proxy = local proxy only
         public string Default = "proxy";     // where traffic without a rule goes
         public bool BlockQuicOnProxy = true;
 
@@ -34,7 +33,6 @@ namespace VlessClient.Core
         public int ProxyPort = 12080;
         public int XrayPort = 12081;
         public int ApiPort = 12090;
-        public int AppsPort = 12082;         // SOCKS inbound that only the "selected programs" interceptor uses
         public string ApiSecret = "";
 
         // tunnel
@@ -117,10 +115,9 @@ namespace VlessClient.Core
                 .Set("node", Node)
                 .Set("auto_exclude", AutoExclude)
                 .Set("last_good_node", LastGoodNode)
-                .Set("mode", Mode)
                 .Set("default", Default)
                 .Set("block_quic_on_proxy", BlockQuicOnProxy)
-                .Set("ports", new JObj().Set("proxy", ProxyPort).Set("xray", XrayPort).Set("api", ApiPort).Set("apps", AppsPort))
+                .Set("ports", new JObj().Set("proxy", ProxyPort).Set("xray", XrayPort).Set("api", ApiPort))
                 .Set("api_secret", ApiSecret)
                 .Set("tun", new JObj().Set("name", TunName).Set("address4", TunAddress4).Set("address6", TunAddress6)
                     .Set("ipv6", TunIpv6).Set("mtu", TunMtu).Set("stack", TunStack).Set("exclude_routes", ExcludeRoutes))
@@ -143,12 +140,11 @@ namespace VlessClient.Core
             s.Node = j.Str("node", "auto");
             s.AutoExclude = j.Str("auto_exclude");
             s.LastGoodNode = j.Str("last_good_node");
-            var mode = j.Str("mode", "tun");
-            s.Mode = mode == "proxy" || mode == "apps" ? mode : "tun";
+            // "mode" (apps / proxy) of versions up to 2.1 is ignored: the tunnel is the only mode now
             s.Default = j.Str("default", "proxy") == "direct" ? "direct" : "proxy";
             s.BlockQuicOnProxy = j.Bool("block_quic_on_proxy", true);
             var ports = j.Obj("ports");
-            if (ports != null) { s.ProxyPort = ports.Int("proxy", s.ProxyPort); s.XrayPort = ports.Int("xray", s.XrayPort); s.ApiPort = ports.Int("api", s.ApiPort); s.AppsPort = ports.Int("apps", s.AppsPort); }
+            if (ports != null) { s.ProxyPort = ports.Int("proxy", s.ProxyPort); s.XrayPort = ports.Int("xray", s.XrayPort); s.ApiPort = ports.Int("api", s.ApiPort); }
             s.ApiSecret = j.Str("api_secret");
             var tun = j.Obj("tun");
             if (tun != null)
