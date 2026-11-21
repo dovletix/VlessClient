@@ -59,6 +59,33 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _checkLink();
+  }
+
+  /// vlessclient://add/... from a browser or a messenger: import at once on a fresh install, ask before replacing.
+  Future<void> _checkLink() async {
+    final app = widget.app;
+    final link = await app.vpn.takeLink();
+    if (link == null || !mounted) return;
+    if (app.settings.hasSubscription) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Заменить подписку?'),
+          content: const Text('Ссылка из другого приложения заменит текущую подписку и её серверы.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Заменить')),
+          ],
+        ),
+      );
+      if (ok != true) return;
+    }
+    final err = await app.setSubscription(link);
+    if (err != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+    }
+    setState(() => index = 0);
   }
 
   @override
@@ -71,6 +98,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       widget.app.resume();
+      _checkLink();
     } else if (state == AppLifecycleState.paused) {
       widget.app.pause();
     }

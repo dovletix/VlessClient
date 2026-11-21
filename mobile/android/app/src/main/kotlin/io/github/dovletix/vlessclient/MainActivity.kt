@@ -29,8 +29,26 @@ class MainActivity : FlutterActivity() {
     }
 
     private var pending: Pair<String, MethodChannel.Result>? = null
+    private var link: String? = null
     private val io = Executors.newCachedThreadPool()
     private val main = Handler(Looper.getMainLooper())
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        takeIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        takeIntent(intent)
+    }
+
+    /** vlessclient://add/<subscription link or vless:// lines>, opened from a browser or a messenger. */
+    private fun takeIntent(intent: Intent?) {
+        val data = intent?.dataString ?: return
+        if (intent.action == Intent.ACTION_VIEW && data.startsWith("vlessclient:", ignoreCase = true)) link = data
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -90,6 +108,10 @@ class MainActivity : FlutterActivity() {
             "status" -> result.success(
                 mapOf("running" to BoxVpnService.running, "starting" to BoxVpnService.starting, "error" to BoxVpnService.lastError),
             )
+            "takeLink" -> {
+                result.success(link)
+                link = null
+            }
             "apps" -> background(result) { installedApps() }
             "icon" -> background(result) { appIcon(call.argument<String>("package") ?: "") }
             "installApk" -> background(result) {

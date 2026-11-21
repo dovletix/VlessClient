@@ -70,5 +70,23 @@ class Vpn {
 
   Future<void> openUrl(String url) => _ch.invokeMethod('openUrl', {'url': url});
 
+  /// A subscription passed by a link (vlessclient://add/<link or vless:// lines>) since the last call, or null.
+  Future<String?> takeLink() async {
+    try {
+      final link = await _ch.invokeMethod<String>('takeLink');
+      if (link == null || link.isEmpty) return null;
+      const prefix = 'vlessclient://add/';
+      if (!link.toLowerCase().startsWith(prefix)) return null;
+      final rest = link.substring(prefix.length);
+      try {
+        return Uri.decodeComponent(rest);
+      } catch (_) {
+        return rest;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> share(String text) => _ch.invokeMethod('share', {'text': text});
 }

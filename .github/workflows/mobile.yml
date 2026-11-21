@@ -39,7 +39,7 @@ jobs:
       run:
         working-directory: mobile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -52,7 +52,7 @@ jobs:
   geo:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Download Xray databases and sing-box
         run: |
           set -e
@@ -92,7 +92,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
           distribution: temurin
@@ -166,8 +166,8 @@ jobs:
     needs: [test, geo, libbox-android]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -225,15 +225,118 @@ jobs:
             --build-name "$v" --build-number "$GITHUB_RUN_NUMBER"
           cp build/app/outputs/flutter-apk/app-release.apk "../dist/VlessClient-$v-universal.apk"
           ls -l ../dist
+          # debug build for the emulator test (run-as needs a debuggable app)
+          flutter build apk --debug --target-platform android-x64 --build-name "$v" --build-number "$GITHUB_RUN_NUMBER"
+          mkdir -p ../debug && cp build/app/outputs/flutter-apk/app-debug.apk ../debug/
       - uses: actions/upload-artifact@v4
         with:
           name: VlessClient-android
           path: dist/*.apk
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VlessClient-android-debug
+          path: debug/app-debug.apk
+          retention-days: 7
+
+  android-e2e:
+    needs: [android]
+    runs-on: ubuntu-latest
+    env:
+      E2E_UUID: 3f6c0d52-8a1e-4b7a-9c55-2d8e1f0a7b13
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: VlessClient-android-debug
+          path: ${{ runner.temp }}/apk
+      - name: VLESS test server on the host
+        run: |
+          set -e
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o sb.tar.gz "$SING_BOX_LINUX_URL"
+          echo "$SING_BOX_LINUX_SHA256  sb.tar.gz" | sha256sum -c -
+          tar -xzf sb.tar.gz --strip-components=1
+          cat > server.json <<EOF
+          {"log": {"level": "info", "output": "$RUNNER_TEMP/server.log"},
+           "inbounds": [{"type": "vless", "listen": "0.0.0.0", "listen_port": 10443, "users": [{"uuid": "$E2E_UUID"}]}],
+           "outbounds": [{"type": "direct"}]}
+          EOF
+          nohup ./sing-box run -c server.json > server-stdout.log 2>&1 &
+          sleep 2 && ss -ltn | grep 10443
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Emulator test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash mobile/tools/e2e_android.sh "$RUNNER_TEMP/apk/app-debug.apk" "$E2E_UUID" "$RUNNER_TEMP/server.log" "$GITHUB_WORKSPACE/e2e"
+      - name: Server log
+        if: always()
+        run: cp "$RUNNER_TEMP/server.log" e2e/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-e2e
+          path: e2e/
+          retention-days: 14
+
+  ios:
+    needs: [test, geo, libbox-ios]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: libbox-ios
+          path: ${{ runner.temp }}/libbox
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo-rules
+          path: mobile/assets/rules
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/mobile-v* ]]; then v="${GITHUB_REF_NAME#mobile-v}"; else v="1.0.0"; fi
+          [[ "$v" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,5}$ ]] || { echo "Bad version: $v"; exit 1; }
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+      - name: Add the tunnel extension to the Xcode project
+        run: |
+          set -e
+          unzip -q "$RUNNER_TEMP/libbox/Libbox.xcframework.zip" -d mobile/ios
+          gem list -i xcodeproj >/dev/null || sudo gem install xcodeproj --no-document
+          ruby mobile/tools/add_tunnel_target.rb mobile/ios/Runner.xcodeproj "${{ steps.version.outputs.value }}" "$GITHUB_RUN_NUMBER"
+      - name: Build (unsigned)
+        working-directory: mobile
+        run: |
+          set -e
+          v="${{ steps.version.outputs.value }}"
+          flutter pub get
+          flutter build ios --release --no-codesign --build-name "$v" --build-number "$GITHUB_RUN_NUMBER"
+          test -d build/ios/iphoneos/Runner.app/PlugIns/PacketTunnel.appex
+          mkdir -p ../dist/Payload && cp -R build/ios/iphoneos/Runner.app ../dist/Payload/
+          cd ../dist && zip -qry "VlessClient-$v-ios-unsigned.ipa" Payload && rm -rf Payload && ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VlessClient-ios
+          path: dist/*.ipa
+          if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/mobile-v')
-    needs: [android]
+    needs: [android, android-e2e, ios]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -242,13 +345,17 @@ jobs:
         with:
           name: VlessClient-android
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: VlessClient-ios
+          path: dist
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           v="${GITHUB_REF_NAME#mobile-v}"
-          gh release create "$GITHUB_REF_NAME" dist/*.apk \
+          gh release create "$GITHUB_REF_NAME" dist/*.apk dist/*.ipa \
             --repo "$GITHUB_REPOSITORY" \
             --latest=false \
             --title "VlessClient для телефона $v" \
-            --notes "Android: скачайте VlessClient-$v-arm64-v8a.apk (подходит почти всем телефонам) или VlessClient-$v-universal.apk, если не уверены. Откройте файл на телефоне и разрешите установку. Уже установленное приложение обновится по кнопке «Проверить обновления» в настройках."
+            --notes "Android: скачайте VlessClient-$v-arm64-v8a.apk (подходит почти всем телефонам) или VlessClient-$v-universal.apk, если не уверены. Откройте файл на телефоне и разрешите установку. Уже установленное приложение обновится по кнопке «Проверить обновления» в настройках. iPhone: файл -ios-unsigned.ipa не подписан, установить его можно только переподписав своим платным аккаунтом разработчика Apple (бесплатный не даёт приложениям права на VPN)."

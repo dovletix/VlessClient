@@ -14,6 +14,18 @@ Windows VPN client for VLESS subscriptions, aimed at non-technical users (one bi
 - `installer/` — WiX 4 package (`Package.wxs`), `build-msi.ps1` (cores from `cores.ps1`, pinned versions + SHA-256), `THIRD-PARTY.txt`.
 - `.github/workflows/windows-msi.yml` — builds the MSI on every push; a `v*` tag also publishes a GitHub Release, which the in-app updater reads (`Service/Updater.cs`: releases/latest, the `.msi` asset and its `digest`).
 - `legacy/` — the old PowerShell edition (`vpn.ps1`). Independent of the MSI; do not run both (two TUNs).
+- `mobile/` — the phone app (Flutter, Android + iOS, GPL-3.0 because it links sing-box's libbox); see "Phone app" below.
+
+## Phone app (mobile/)
+
+- One Dart code base: `lib/core/` ports the Windows logic (subscription and node parsing, settings, the sing-box config builder, the traffic monitor of `Ui/Traffic.cs`), `lib/ui/` the screens with the same palette (`ui/theme.dart` = `Ui/Theme.cs`). `flutter analyze` and `flutter test` (test/core_test.dart) need no Android SDK.
+- sing-box is the only core (no Xray): the VLESS outbounds are built in `config.dart`. xhttp and VLESS encryption (mlkem) nodes are unsupported there and shown greyed out.
+- Node choice runs inside sing-box: one `urltest` group named `proxy`. "auto" lists the pool with the last good node first and tolerance 300 ms; a pinned node is followed by one spare with tolerance 60000 ms, so it only fails over when the pinned node is dead. urltest keeps the current pick unless another node beats it by more than the tolerance, which is why this does not hop like Xray's leastPing. Never use a selector over all nodes with a short tolerance.
+- The app talks to the tunnel only through the Clash API on 127.0.0.1:12090 (delay tests, current node, `/connections` for the monitor, closing connections after a rule change). Rules are local rule-set files in `<data>/rules/` that sing-box hot-reloads; structural changes rebuild the config and call `reload`.
+- Android (`android/app/src/main/kotlin/...`): `BoxVpnService` is a VpnService that implements libbox's PlatformInterface (modelled on SFA, the official sing-box app; most methods are stubs). sing-box's sockets are protected via `autoDetectInterfaceControl`; per-app rules use `package_name` with `find_process` (`getConnectionOwnerUid`). The Flutter channel is `vlessclient/vpn` in `MainActivity`.
+- iOS (`ios/PacketTunnel/`, `ios/Runner/VpnChannel.swift`): a Packet Tunnel extension with libbox; the config goes in the start options and as a provider message on reload. The Xcode target is added in CI by `tools/add_tunnel_target.rb` (the committed project has no extension target). Data lives in the app group `group.io.github.dovletix.vlessclient`. Installing needs a paid Apple developer account (Network Extension entitlement); CI produces an unsigned IPA only.
+- CI (`.github/workflows/mobile.yml`): libbox via `gomobile bind` (sagernet fork, tags in `LIBBOX_TAGS`, cached by `LIBBOX_CACHE`), the RU geo rule-sets from the Xray databases of `cores.ps1` (`tools/geo_rules.py` + `sing-box rule-set compile`), APKs per ABI plus universal, the unsigned IPA. A `mobile-v*` tag publishes a release with `--latest=false`, because the Windows updater reads releases/latest. The in-app Android updater lists releases, takes the newest `mobile-v*` and checks the APK's SHA-256 digest.
+- Android release signing: repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Without them CI signs with a throw-away debug key and refuses to publish a tag. Never commit a keystore: anyone with it could ship "updates".
 
 ## Behaviour that matters
 
