@@ -38,16 +38,34 @@ class Node {
     return k;
   }
 
-  /// Why sing-box (the only core on the phone) cannot use this node; null when it can.
-  String? get unsupportedReason {
+  /// True when the app ships Xray next to sing-box (Android arm64 / x86_64): it carries what sing-box cannot.
+  /// Set once at start from the native side.
+  static bool xrayAvailable = false;
+
+  /// Why sing-box itself cannot use this node (null when it can).
+  String? get singboxReason {
     const transports = {'tcp', 'raw', 'ws', 'grpc', 'httpupgrade', 'http', 'h2'};
-    if (!transports.contains(network)) return 'тип соединения $network на телефоне не поддерживается';
-    if (q('encryption').isNotEmpty && q('encryption') != 'none') return 'шифрование VLESS (mlkem) на телефоне не поддерживается';
-    if (security.isNotEmpty && security != 'none' && security != 'tls' && security != 'reality') {
-      return 'защита $security на телефоне не поддерживается';
-    }
-    if (security == 'reality' && q('pbk').isEmpty) return 'в ссылке нет ключа Reality (pbk)';
+    if (!transports.contains(network)) return 'тип соединения $network';
+    if (q('encryption').isNotEmpty && q('encryption') != 'none') return 'шифрование VLESS (mlkem)';
+    if (security.isNotEmpty && security != 'none' && security != 'tls' && security != 'reality') return 'защита $security';
     return null;
+  }
+
+  /// Transports Xray understands (everything a VLESS link of 3x-ui can describe).
+  bool get _xrayCan {
+    const transports = {'tcp', 'raw', 'ws', 'grpc', 'httpupgrade', 'http', 'h2', 'xhttp', 'splithttp', 'kcp', 'mkcp'};
+    return transports.contains(network) && (security.isEmpty || security == 'none' || security == 'tls' || security == 'reality');
+  }
+
+  /// This node goes through the bundled Xray (sing-box connects to it over a local SOCKS port).
+  bool get viaXray => singboxReason != null && xrayAvailable && _xrayCan;
+
+  /// Why the phone cannot use this node at all; null when it can.
+  String? get unsupportedReason {
+    if (security == 'reality' && q('pbk').isEmpty) return 'в ссылке нет ключа Reality (pbk)';
+    final r = singboxReason;
+    if (r == null || viaXray) return null;
+    return '$r на этом телефоне не поддерживается';
   }
 
   bool get supported => unsupportedReason == null;

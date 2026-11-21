@@ -152,6 +152,8 @@ class TrafficMonitor {
     final now = DateTime.now();
     final seen = <String>{};
     for (final c in list) {
+      // Xray's own connections to the servers (through sing-box's xray-in) are not an app's traffic
+      if (((c['metadata'] as Map?)?['type'] ?? '').toString().endsWith('/xray-in')) continue;
       final id = (c['id'] ?? '').toString();
       seen.add(id);
       final up = (c['upload'] as num?)?.toInt() ?? 0, down = (c['download'] as num?)?.toInt() ?? 0;

@@ -70,7 +70,9 @@ class ServersPage extends StatelessWidget {
                         subtitle: Row(children: [
                           Expanded(
                             child: Hint(
-                              n.supported ? '${n.kind}${auto && !pool.contains(n.index) ? ' · не участвует в автовыборе' : ''}' : n.unsupportedReason!,
+                              n.supported
+                                  ? '${n.kind}${n.viaXray ? ' · через Xray' : ''}${auto && !pool.contains(n.index) ? ' · не участвует в автовыборе' : ''}'
+                                  : n.unsupportedReason!,
                               size: 12,
                             ),
                           ),

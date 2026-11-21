@@ -31,6 +31,11 @@ env:
   XRAY_ZIP_SHA256: '1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d'
   SING_BOX_LINUX_URL: 'https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-linux-amd64.tar.gz'
   SING_BOX_LINUX_SHA256: '699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968'
+  # Xray for the nodes sing-box cannot carry (XHTTP): bundled as libxray.so; the Linux build checks configs and serves the e2e test
+  XRAY_RELEASE: 'https://github.com/XTLS/Xray-core/releases/download/v26.11.9'
+  XRAY_ANDROID_ARM64_SHA256: 'edcefc25b9b3195b11e18624c8269a969d6aabc39c6298a9a5ab29de15d46f3b'
+  XRAY_ANDROID_AMD64_SHA256: '48c266cdb9660dade968814e2f91d84e6aff534b7c3762ca3e385fb8aa475bd8'
+  XRAY_LINUX_SHA256: 'b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82'
 
 jobs:
   test:
@@ -48,6 +53,19 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      - name: Check generated configs with the real cores
+        run: |
+          set -e
+          dl="$RUNNER_TEMP/cores" && mkdir -p "$dl"
+          curl -fsSL -o "$dl/sb.tar.gz" "$SING_BOX_LINUX_URL"
+          echo "$SING_BOX_LINUX_SHA256  $dl/sb.tar.gz" | sha256sum -c -
+          tar -xzf "$dl/sb.tar.gz" -C "$dl" --strip-components=1
+          curl -fsSL -o "$dl/xray.zip" "$XRAY_RELEASE/Xray-linux-64.zip"
+          echo "$XRAY_LINUX_SHA256  $dl/xray.zip" | sha256sum -c -
+          unzip -q -o "$dl/xray.zip" xray -d "$dl"
+          CONFIG_OUT="$RUNNER_TEMP/cfg" flutter test test/config_files_test.dart
+          "$dl/sing-box" check -c "$RUNNER_TEMP/cfg/sing-box.json"
+          "$dl/xray" run -test -c "$RUNNER_TEMP/cfg/xray.json"
 
   geo:
     runs-on: ubuntu-latest
@@ -184,6 +202,18 @@ jobs:
         with:
           name: geo-rules
           path: mobile/assets/rules
+      - name: Bundle Xray (libxray.so)
+        run: |
+          set -e
+          for pair in "arm64-v8a arm64-v8a $XRAY_ANDROID_ARM64_SHA256" "x86_64 amd64 $XRAY_ANDROID_AMD64_SHA256"; do
+            set -- $pair
+            curl -fsSL -o "$RUNNER_TEMP/xray-$1.zip" "$XRAY_RELEASE/Xray-android-$2.zip"
+            echo "$3  $RUNNER_TEMP/xray-$1.zip" | sha256sum -c -
+            mkdir -p "mobile/android/app/src/main/jniLibs/$1"
+            unzip -q -o -p "$RUNNER_TEMP/xray-$1.zip" xray > "mobile/android/app/src/main/jniLibs/$1/libxray.so"
+            chmod 755 "mobile/android/app/src/main/jniLibs/$1/libxray.so"
+          done
+          ls -l mobile/android/app/src/main/jniLibs/*
       - name: Version
         id: version
         run: |
@@ -263,8 +293,19 @@ jobs:
            "outbounds": [{"type": "direct"}]}
           EOF
           nohup ./sing-box run -c server.json > server-stdout.log 2>&1 &
-          sleep 2 && ss -ltn | grep 10443
-      - name: Enable KVM
+          # an XHTTP server (only Xray speaks it): the phone reaches it through its bundled Xray
+          curl -fsSL -o xray.zip "$XRAY_RELEASE/Xray-linux-64.zip"
+          echo "$XRAY_LINUX_SHA256  xray.zip" | sha256sum -c -
+          unzip -q -o xray.zip xray
+          cat > xray-server.json <<EOF
+          {"log": {"loglevel": "info", "access": "$RUNNER_TEMP/xray-access.log", "error": "$RUNNER_TEMP/xray-error.log"},
+           "inbounds": [{"listen": "0.0.0.0", "port": 10444, "protocol": "vless",
+                         "settings": {"clients": [{"id": "$E2E_UUID"}], "decryption": "none"},
+                         "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": "/ci", "mode": "auto"}}}],
+           "outbounds": [{"protocol": "freedom"}]}
+          EOF
+          nohup ./xray run -c xray-server.json > xray-stdout.log 2>&1 &
+          sleep 2 && ss -ltn | grep -E '10443|10444'      - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
@@ -277,10 +318,10 @@ jobs:
           arch: x86_64
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash mobile/tools/e2e_android.sh "$RUNNER_TEMP/apk/app-debug.apk" "$E2E_UUID" "$RUNNER_TEMP/server.log" "$GITHUB_WORKSPACE/e2e"
+          script: bash mobile/tools/e2e_android.sh "$RUNNER_TEMP/apk/app-debug.apk" "$E2E_UUID" "$RUNNER_TEMP/server.log" "$GITHUB_WORKSPACE/e2e" "$RUNNER_TEMP/xray-access.log"
       - name: Server log
         if: always()
-        run: cp "$RUNNER_TEMP/server.log" e2e/ 2>/dev/null || true
+        run: cp "$RUNNER_TEMP/server.log" "$RUNNER_TEMP"/xray-*.log e2e/ 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

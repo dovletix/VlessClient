@@ -172,6 +172,7 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
         try {
             setup(this)
             DefaultNetworkMonitor.start(this)
+            XrayProcess.start(this)
             val s = CommandServer(this, this)
             s.start()
             server = s
@@ -195,6 +196,7 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
         try {
             lastError = ""
             closeTun()
+            XrayProcess.start(this)
             s.startOrReloadService(readConfig(), OverrideOptions())
             running = true
         } catch (e: Exception) {
@@ -228,6 +230,7 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
             }
         }
         closeTun()
+        XrayProcess.stop()
         DefaultNetworkMonitor.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

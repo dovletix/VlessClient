@@ -3,9 +3,11 @@
 # a throw-away VLESS server runs on the CI host (10.0.2.2 from the emulator), the debug APK imports it
 # through a vlessclient://add/ link, connects, and the test checks that sing-box picked the node,
 # that traffic from the phone reaches the server through the tunnel, and takes screenshots of every tab.
-# usage: e2e_android.sh <apk> <server uuid> <server log> <out dir>
+# With a fifth argument (the access log of an Xray XHTTP server on port 10444) it also checks the XHTTP path
+# through the app's bundled Xray.
+# usage: e2e_android.sh <apk> <server uuid> <server log> <out dir> [xray access log]
 set -euo pipefail
-APK=$1 UUID=$2 SERVER_LOG=$3 OUT=$4
+APK=$1 UUID=$2 SERVER_LOG=$3 OUT=$4 XRAY_LOG=${5:-}
 PKG=io.github.dovletix.vlessclient
 mkdir -p "$OUT"
 
@@ -28,6 +30,7 @@ adb install -r -g "$APK"
 adb shell appops set "$PKG" ACTIVATE_VPN allow
 
 LINK="vless://$UUID@10.0.2.2:10443?type=tcp&security=none#CI%20server"
+[ -z "$XRAY_LOG" ] || LINK="$LINK"$'\n'"vless://$UUID@10.0.2.2:10444?type=xhttp&security=none&path=%2Fci&mode=auto#CI%20xhttp"
 ENC=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$LINK")
 adb shell am start -W -a android.intent.action.VIEW -d "vlessclient://add/$ENC" "$PKG"
 
@@ -52,7 +55,7 @@ python3 - "$OUT/proxy.json" <<'EOF'
 import json, sys
 p = json.load(open(sys.argv[1]))
 print("urltest group:", p.get("type"), "now:", p.get("now"), "history:", p.get("history"))
-assert p.get("now") == "node-01", "the proxy group did not pick the CI server"
+assert p.get("now") in ("node-01", "node-02"), "the proxy group did not pick a CI server"
 EOF
 
 # traffic from a phone process (the shell user) must go through the tunnel and reach the VLESS server
@@ -62,8 +65,19 @@ curl -fsS -H "Authorization: Bearer $SECRET" http://127.0.0.1:12090/connections 
 head -3 "$OUT/nc.txt"
 grep -q "HTTP/1.1 204" "$OUT/nc.txt" || { echo "no answer to the request from the phone"; exit 1; }
 # sing-box sends the server the IP it connected to (sniffing does not override the destination)
-grep -q "inbound connection to [0-9.]*:80$" "$SERVER_LOG" || { echo "the request did not reach the VLESS server"; tail -50 "$SERVER_LOG"; exit 1; }
+grep -q "inbound connection to [0-9.]*:80$" "$SERVER_LOG" || { [ -n "$XRAY_LOG" ] && grep -q "tcp:[0-9.]*:80 " "$XRAY_LOG"; } || \
+  { echo "the request did not reach a VLESS server"; tail -50 "$SERVER_LOG"; exit 1; }
 echo "tunnel OK: the request went through the VLESS server"
+
+if [ -n "$XRAY_LOG" ]; then
+  # the XHTTP node: sing-box -> local SOCKS -> bundled Xray -> (back through sing-box's xray-in) -> the XHTTP server
+  adb shell ps -A | grep libxray > "$OUT/xray-ps.txt" || { echo "the bundled Xray is not running"; exit 1; }
+  curl -sS -H "Authorization: Bearer $SECRET" "http://127.0.0.1:12090/proxies/node-02/delay?timeout=10000&url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204" > "$OUT/xhttp-delay.json" || true
+  cat "$OUT/xhttp-delay.json"; echo
+  grep -q '"delay"' "$OUT/xhttp-delay.json" || { echo "no answer through the XHTTP node"; adb shell run-as "$PKG" cat files/xray.log || true; exit 1; }
+  grep -q "accepted" "$XRAY_LOG" || { echo "the XHTTP server saw nothing"; exit 1; }
+  echo "XHTTP OK: the request went through the bundled Xray and the XHTTP server"
+fi
 python3 - "$OUT/connections.json" <<'EOF'
 import json, sys
 c = json.load(open(sys.argv[1]))["connections"]
@@ -90,4 +104,5 @@ tap_tab 0
 sleep 1
 adb logcat -d > "$OUT/logcat.txt"
 adb shell run-as "$PKG" cat files/sing-box.log > "$OUT/sing-box.log" || true
+adb shell run-as "$PKG" cat files/xray.log > "$OUT/xray-client.log" || true
 echo "e2e passed"

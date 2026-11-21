@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'node.dart';
 import 'settings.dart';
+import 'xray.dart';
 
 /// Where the phone build differs from the Windows one.
 enum MobileOs { android, ios }
@@ -124,6 +125,10 @@ class SingBoxConfig {
 
   static Map<String, dynamic>? outbound(Node n) {
     if (!n.supported) return null;
+    if (n.viaXray) {
+      // XHTTP and friends: the bundled Xray listens for this node on its own local SOCKS port
+      return {'type': 'socks', 'tag': n.tag, 'server': '127.0.0.1', 'server_port': XrayConfig.portOf(n), 'version': '5'};
+    }
     final o = <String, dynamic>{
       'type': 'vless',
       'tag': n.tag,
@@ -203,7 +208,10 @@ class SingBoxConfig {
     final q = s.blockQuicOnProxy;
     final geo = s.ruDirect;
 
+    final xray = all.any((n) => n.supported && n.viaXray);
     final rules = <Object>[
+      // Xray's own connections to the servers: straight out, past the tunnel and every other rule
+      if (xray) {'inbound': ['xray-in'], 'outbound': 'direct'},
       {'action': 'sniff'},
       {'protocol': 'dns', 'action': 'hijack-dns'},
       {'ip_is_private': true, 'outbound': 'direct'},
@@ -270,7 +278,10 @@ class SingBoxConfig {
     return {
       'log': {'level': s.logLevel.isEmpty ? 'warn' : s.logLevel, 'output': '$dataDir/sing-box.log', 'timestamp': true},
       'dns': dns,
-      'inbounds': [tun],
+      'inbounds': [
+        tun,
+        if (xray) {'type': 'mixed', 'tag': 'xray-in', 'listen': '127.0.0.1', 'listen_port': XrayConfig.dialerPort},
+      ],
       'outbounds': [
         group,
         ...nodeOuts,

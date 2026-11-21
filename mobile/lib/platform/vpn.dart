@@ -29,13 +29,18 @@ class Vpn {
     dataDir = info['dataDir'] as String;
     version = (info['version'] ?? '1.0.0') as String;
     abi = (info['abi'] ?? '') as String;
+    xray = info['xray'] == true;
   }
 
-  /// Starts the tunnel with this sing-box config (asks for the VPN permission the first time).
-  Future<void> start(String config) => _ch.invokeMethod('start', {'config': config});
+  /// The build ships Xray for the nodes sing-box cannot carry (Android arm64 / x86_64).
+  bool xray = false;
+
+  /// Starts the tunnel with this sing-box config and, when some node needs it, the Xray config
+  /// (asks for the VPN permission the first time).
+  Future<void> start(String config, {String xray = ''}) => _ch.invokeMethod('start', {'config': config, 'xray': xray});
 
   /// Applies a new config to the running tunnel (sing-box restarts inside; open connections drop).
-  Future<void> reload(String config) => _ch.invokeMethod('reload', {'config': config});
+  Future<void> reload(String config, {String xray = ''}) => _ch.invokeMethod('reload', {'config': config, 'xray': xray});
 
   Future<void> stop() => _ch.invokeMethod('stop');
 

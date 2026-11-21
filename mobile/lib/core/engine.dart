@@ -11,6 +11,7 @@ import 'config.dart';
 import 'node.dart';
 import 'settings.dart';
 import 'traffic.dart';
+import 'xray.dart';
 
 enum VpnState { off, connecting, on, error, noSubscription }
 
@@ -68,6 +69,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> init() async {
     await vpn.init();
+    Node.xrayAvailable = vpn.xray;
     Directory(dataDir).createSync(recursive: true);
     settings = Settings.load(_settingsPath);
     _saveSettings();
@@ -238,17 +240,21 @@ class AppState extends ChangeNotifier {
       }
       SingBoxConfig.writeUserRuleSets(settings, rulesDir);
       final config = _buildConfig(plan);
-      try {
-        File(logFile).deleteSync();
-      } catch (_) {}
+      final xrayConfig = XrayConfig.build(nodes, '$dataDir/xray.log');
+      final xray = xrayConfig == null ? '' : jsonEncode(xrayConfig);
+      for (final f in [logFile, '$dataDir/xray.log']) {
+        try {
+          File(f).deleteSync();
+        } catch (_) {}
+      }
       monitor.reset();
 
       _set(VpnState.connecting, 'Запускаю туннель…');
       final st = await vpn.status();
       if (st.running) {
-        await vpn.reload(config);
+        await vpn.reload(config, xray: xray);
       } else {
-        await vpn.start(config);
+        await vpn.start(config, xray: xray);
       }
       var alive = false;
       for (var i = 0; i < 50 && !alive; i++) {
@@ -642,7 +648,8 @@ class AppState extends ChangeNotifier {
     b.writeln('nodes:');
     for (final n in nodes) {
       final d = delays[n.tag];
-      b.writeln('  ${n.index.toString().padLeft(2)} ${n.name}  ${n.kind}${n.supported ? '' : '  (${n.unsupportedReason})'}${d != null ? '  $d ms' : ''}');
+      b.writeln('  ${n.index.toString().padLeft(2)} ${n.name}  ${n.kind}${n.viaXray ? '  via xray' : ''}'
+          '${n.supported ? '' : '  (${n.unsupportedReason})'}${d != null ? '  $d ms' : ''}');
     }
     b.writeln('--- sing-box.log ---');
     try {

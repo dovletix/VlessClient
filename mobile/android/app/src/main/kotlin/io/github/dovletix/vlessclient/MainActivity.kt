@@ -75,10 +75,12 @@ class MainActivity : FlutterActivity() {
                     "version" to BuildConfig.VERSION_NAME,
                     "abi" to (Build.SUPPORTED_ABIS.firstOrNull() ?: ""),
                     "sdk" to Build.VERSION.SDK_INT,
+                    "xray" to XrayProcess.available(this),
                 ),
             )
             "start" -> {
                 val config = call.argument<String>("config") ?: return result.error("args", "no config", null)
+                writeXray(call.argument<String>("xray"))
                 askNotifications()
                 val consent = VpnService.prepare(this)
                 if (consent != null) {
@@ -97,6 +99,7 @@ class MainActivity : FlutterActivity() {
             }
             "reload" -> {
                 val config = call.argument<String>("config") ?: return result.error("args", "no config", null)
+                writeXray(call.argument<String>("xray"))
                 BoxVpnService.configFile(this).writeText(config)
                 BoxVpnService.send(this, BoxVpnService.ACTION_RELOAD)
                 result.success(null)
@@ -133,6 +136,12 @@ class MainActivity : FlutterActivity() {
             }
             else -> result.notImplemented()
         }
+    }
+
+    /** files/xray.json for the bundled Xray; removed when no node needs it (the service then does not start Xray). */
+    private fun writeXray(config: String?) {
+        val f = XrayProcess.configFile(this)
+        if (config.isNullOrEmpty()) f.delete() else f.writeText(config)
     }
 
     private fun startTunnel(config: String, result: MethodChannel.Result) {

@@ -6,6 +6,7 @@ import 'package:vlessclient/core/engine.dart';
 import 'package:vlessclient/core/node.dart';
 import 'package:vlessclient/core/settings.dart';
 import 'package:vlessclient/core/traffic.dart';
+import 'package:vlessclient/core/xray.dart';
 
 // Made-up servers (documentation addresses, random keys): never real ones in this public repository.
 const reality = 'vless://11111111-2222-3333-4444-555555555555@203.0.113.10:443?type=tcp&security=reality&flow=xtls-rprx-vision'
@@ -138,6 +139,49 @@ void main() {
       expect((jsonDecode(f['proxy-ips']!)['rules'] as List).first, {'ip_cidr': ['198.51.100.0/24']});
       expect((jsonDecode(f['apps-proxy']!)['rules'] as List).first, {'package_name': ['com.game']});
       expect(jsonDecode(f['apps-direct']!)['rules'], isEmpty);
+    });
+  });
+
+  group('xray', () {
+    tearDown(() => Node.xrayAvailable = false);
+
+    test('xhttp nodes go through the bundled Xray when it is there', () {
+      final nodes = Subscription.parseAll('$reality\n$xhttp');
+      expect(nodes[1].viaXray, isFalse);
+      Node.xrayAvailable = true;
+      expect(nodes[0].viaXray, isFalse, reason: 'sing-box handles tcp+reality itself');
+      expect(nodes[1].viaXray, isTrue);
+      expect(nodes[1].supported, isTrue);
+
+      final s = Settings()..apiSecret = 'x';
+      final c = SingBoxConfig.build(s, nodes, NodePlan.make(s, nodes)!, dataDir: '/d', os: MobileOs.android);
+      final outs = (c['outbounds'] as List).cast<Map>();
+      final relay = outs.firstWhere((o) => o['tag'] == 'node-02');
+      expect(relay['type'], 'socks');
+      expect(relay['server_port'], XrayConfig.basePort + 2);
+      expect(((c['outbounds'] as List).first as Map)['outbounds'], ['node-01', 'node-02']);
+      final rules = ((c['route'] as Map)['rules'] as List).cast<Map>();
+      expect(rules.first, {'inbound': ['xray-in'], 'outbound': 'direct'});
+      expect((c['inbounds'] as List).any((i) => (i as Map)['tag'] == 'xray-in'), isTrue);
+
+      final x = XrayConfig.build(nodes, '/d/xray.log')!;
+      final ins = (x['inbounds'] as List).cast<Map>();
+      expect(ins.single['port'], XrayConfig.basePort + 2);
+      final vless = (x['outbounds'] as List).cast<Map>().firstWhere((o) => o['tag'] == 'node-02');
+      final stream = vless['streamSettings'] as Map;
+      expect(stream['network'], 'xhttp');
+      expect(stream['security'], 'reality');
+      expect((stream['sockopt'] as Map)['dialerProxy'], 'via-singbox');
+      expect(jsonDecode(jsonEncode(x)), isA<Map>());
+    });
+
+    test('no Xray config and no xray-in inbound without such nodes', () {
+      Node.xrayAvailable = true;
+      final nodes = Subscription.parseAll(reality);
+      expect(XrayConfig.build(nodes, '/d/xray.log'), isNull);
+      final s = Settings()..apiSecret = 'x';
+      final c = SingBoxConfig.build(s, nodes, NodePlan.make(s, nodes)!, dataDir: '/d', os: MobileOs.android);
+      expect(jsonEncode(c).contains('xray-in'), isFalse);
     });
   });
 
