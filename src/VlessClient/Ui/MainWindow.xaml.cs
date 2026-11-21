@@ -9,17 +9,28 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Threading;
 using VlessClient.Core;
 
 namespace VlessClient.Ui
 {
-    public sealed class AppVm
+    public sealed class AppVm : INotifyPropertyChanged
     {
+        private bool running;
         public string Name { get; set; }
         public bool Vpn { get; set; }
-        public string ProcessText { get; set; }
+        public List<string> Processes { get; set; } = new List<string>();
+        public string ProcessText => string.Join(", ", Processes);
+        public bool Running { get => running; set { if (running == value) return; running = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Running))); } }
+        public event PropertyChangedEventHandler PropertyChanged;
+    }
+
+    public sealed class ChipVm
+    {
+        public string Value { get; set; }
+        public string List { get; set; }
     }
 
     public sealed class NodeRow
@@ -38,7 +49,11 @@ namespace VlessClient.Ui
         private readonly DispatcherTimer trafficTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         private readonly DispatcherTimer proxyTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
         private readonly TrafficMonitor traffic = new TrafficMonitor();
-        private readonly ObservableCollection<TrafficRow> trafficRows = new ObservableCollection<TrafficRow>();
+        private readonly Dictionary<string, ProcRow> allRows = new Dictionary<string, ProcRow>(StringComparer.OrdinalIgnoreCase);
+        private readonly ObservableCollection<ProcRow> visibleRows = new ObservableCollection<ProcRow>();
+        private TrafficSnapshot lastSnap;
+        private string sortKey = "speed";
+        private int sortDir = -1;
         private Dictionary<string, object> status;
         private Dictionary<string, object> settings;
         private bool polling, sampling, suppress, reallyExit, serviceDown;
@@ -53,13 +68,11 @@ namespace VlessClient.Ui
             this.client = client;
             InitializeComponent();
             Icon = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(Icons.Shield(Icons.On, true).Handle, Int32Rect.Empty, System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
-            TrafficGrid.ItemsSource = trafficRows;
-            var view = (ListCollectionView)CollectionViewSource.GetDefaultView(trafficRows);
-            view.SortDescriptions.Add(new SortDescription("SpeedSort", ListSortDirection.Descending));
-            view.SortDescriptions.Add(new SortDescription("TotalBytes", ListSortDirection.Descending));
-            view.IsLiveSorting = true;
-            view.LiveSortingProperties.Add("SpeedSort");
-            view.LiveSortingProperties.Add("TotalBytes");
+            ProcList.ItemsSource = visibleRows;
+            SourceInitialized += (s, e) => Theme.TitleBar(this, Theme.Dark);
+            ThemeDark.IsChecked = Theme.Dark;
+            ThemeLight.IsChecked = !Theme.Dark;
+            UpdateHeaders();
             statusTimer.Tick += async (s, e) => await PollStatus();
             trafficTimer.Tick += async (s, e) => await SampleTraffic();
             proxyTimer.Tick += (s, e) => CheckLeftoverProxy();
@@ -97,6 +110,9 @@ namespace VlessClient.Ui
             yield return () => Save("2-settings");
             yield return () => OpenAdvancedClick(null, null);
             yield return () => { };
+            yield return () => { };
+            yield return () => { };
+            yield return () => { var r = visibleRows.FirstOrDefault(x => x.D.Fails.Count > 0) ?? visibleRows.FirstOrDefault(x => x.CanOpen); if (r != null) r.IsExpanded = true; };
             yield return () => Save("3-advanced-programs");
             yield return () => AdvancedTabs.SelectedIndex = 1;
             yield return () => Save("4-advanced-sites");
@@ -156,9 +172,18 @@ namespace VlessClient.Ui
         {
             foreach (var p in new FrameworkElement[] { SetupPage, HomePage, SettingsPage, AdvancedPage }) p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
             current = page;
-            if (page == AdvancedPage && AdvancedTabs.SelectedIndex == 0) { traffic.Reset(); trafficRows.Clear(); trafficTimer.Start(); }
+            if (page == AdvancedPage && AdvancedTabs.SelectedIndex == 0) { trafficTimer.Start(); _ = SampleTraffic(); }
             else trafficTimer.Stop();
-            if (page == AdvancedPage) { Width = Math.Max(Width, 900); Height = Math.Max(Height, 640); }
+            if (page == AdvancedPage)
+            {
+                var area = SystemParameters.WorkArea;
+                var w = Math.Min(1220, area.Width - 40); var h = Math.Min(820, area.Height - 40);
+                var onScreen = Left > area.Left - 2000;   // the off-screen snapshot window must stay off-screen
+                if (Width < w) { if (onScreen) Left = Math.Max(area.Left, Left - (w - Width) / 2); Width = w; }
+                if (Height < h) { if (onScreen) Top = Math.Max(area.Top, Top - (h - Height) / 2); Height = h; }
+                if (onScreen && Left + Width > area.Right) Left = Math.Max(area.Left, area.Right - Width);
+                if (onScreen && Top + Height > area.Bottom) Top = Math.Max(area.Top, area.Bottom - Height);
+            }
         }
 
         private void SetBusy(string text)
@@ -263,6 +288,7 @@ namespace VlessClient.Ui
 
             RenderUpdate(upd);
             RenderNodeChoices();
+            RenderAdvancedHeader(st);
             StatusChanged?.Invoke(st == "nosubscription" ? "off" : st, enabled, title + (st == "on" ? " (" + status.Str("node") + ")" : ""));
         }
 
@@ -392,11 +418,19 @@ namespace VlessClient.Ui
                 lastNodesKey = "";
                 RenderNodeChoices();
 
-                var apps = settings.Objects("apps").Select(a => new AppVm { Name = a.Str("name"), Vpn = a.Bool("vpn"), ProcessText = string.Join(", ", a.Strings("processes")) }).ToList();
+                var apps = settings.Objects("apps").Select(a => new AppVm { Name = a.Str("name"), Vpn = a.Bool("vpn"), Processes = a.Strings("processes") }).ToList();
                 AppsList.ItemsSource = apps;
+                AppsEmpty.Visibility = apps.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                MarkRunningApps();
                 var rules = settings.Obj("rules");
-                DirectList.ItemsSource = rules.Strings("direct_domains").Concat(rules.Strings("direct_ips")).ToList();
-                ProxyList.ItemsSource = rules.Strings("proxy_domains").Concat(rules.Strings("proxy_ips")).ToList();
+                var direct = rules.Strings("direct_domains").Concat(rules.Strings("direct_ips")).Select(v => new ChipVm { Value = v, List = "direct" }).ToList();
+                var proxy = rules.Strings("proxy_domains").Concat(rules.Strings("proxy_ips")).Select(v => new ChipVm { Value = v, List = "proxy" }).ToList();
+                DirectChips.ItemsSource = direct; DirectEmpty.Visibility = direct.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                ProxyChips.ItemsSource = proxy; ProxyEmpty.Visibility = proxy.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                RuNote.Text = settings.Obj("ru_direct").Bool("enabled", true)
+                    ? "Российские сайты и адреса идут напрямую автоматически; заблокированные в России — через VPN."
+                    : "Автоматическое правило для российских сайтов выключено (Настройки → Российские сайты).";
+                if (current == AdvancedPage) RenderProcRows();
                 AutoExcludeInput.Text = settings.Str("auto_exclude");
                 DefaultProxy.IsChecked = settings.Str("default") != "direct";
                 DefaultDirect.IsChecked = settings.Str("default") == "direct";
@@ -544,6 +578,9 @@ namespace VlessClient.Ui
 
         // ------------------------------------------------------------------ advanced: programs
 
+        // The web UI's "Процессы" table: per program speed, totals, connections, VPN / direct split, failures; the rows
+        // stay the same objects (expanded state survives), the visible list is filtered and sorted every second.
+
         private async Task SampleTraffic()
         {
             if (sampling || settings == null) return;
@@ -552,34 +589,196 @@ namespace VlessClient.Ui
             {
                 var api = settings.Obj("api");
                 if (api == null) return;
-                if (!await traffic.SampleAsync(api.Int("port"), api.Str("secret"))) return;
-                var apps = settings.Objects("apps");
-                traffic.Apply(trafficRows, exe =>
-                {
-                    var a = apps.FirstOrDefault(x => x.Strings("processes").Any(p => p.Equals(exe, StringComparison.OrdinalIgnoreCase)));
-                    return a == null ? "" : a.Bool("vpn") ? "через VPN" : "напрямую";
-                });
-                TrafficEmpty.Visibility = trafficRows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+                var ruled = new HashSet<string>(settings.Objects("apps").SelectMany(a => a.Strings("processes")), StringComparer.OrdinalIgnoreCase);
+                lastSnap = await traffic.SampleAsync(api.Int("port"), api.Str("secret"), ShowAllBox.IsChecked == true, ruled);
+                RenderProcRows();
             }
             finally { sampling = false; }
         }
 
-        private void TrafficSorting(object sender, DataGridSortingEventArgs e)
+        private void RenderProcRows()
         {
-            var view = (ListCollectionView)CollectionViewSource.GetDefaultView(trafficRows);
-            var prop = e.Column.SortMemberPath;
-            if (!view.LiveSortingProperties.Contains(prop)) view.LiveSortingProperties.Add(prop);
+            if (lastSnap == null || settings == null) return;
+            var apps = settings.Objects("apps");
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var d in lastSnap.Rows)
+            {
+                seen.Add(d.Key);
+                if (!allRows.TryGetValue(d.Key, out var row)) allRows[d.Key] = row = new ProcRow(d.Key);
+                var a = apps.FirstOrDefault(x => x.Strings("processes").Any(p => p.Equals(d.Key, StringComparison.OrdinalIgnoreCase)));
+                row.Update(d, a?.Str("name"), a?.Bool("vpn") ?? false);
+            }
+            foreach (var k in allRows.Keys.Where(k => !seen.Contains(k)).ToList()) allRows.Remove(k);
+
+            var q = SearchBox.Text.Trim();
+            var onlyBad = OnlyBadBox.IsChecked == true;
+            Func<ProcRow, IComparable> key;
+            switch (sortKey)
+            {
+                case "name": key = r => r.Name.ToLowerInvariant(); break;
+                case "total": key = r => r.SortTotal; break;
+                case "conns": key = r => r.SortConns; break;
+                case "vpn": key = r => r.SortVpn; break;
+                case "fail": key = r => r.SortFail; break;
+                default: key = r => r.SortSpeed; break;
+            }
+            var list = allRows.Values
+                .Where(r => q.Length == 0 || r.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 || r.AppName.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)
+                .Where(r => !onlyBad || r.D.Fail > 0 || r.D.Udp > 0)
+                .ToList();
+            list.Sort((x, y) =>
+            {
+                var c = key(x).CompareTo(key(y)) * (sortDir < 0 ? -1 : 1);
+                if (c != 0) return c;
+                // ties: more traffic first, then programs with a window, then by name
+                c = y.SortTotal.CompareTo(x.SortTotal); if (c != 0) return c;
+                c = y.D.Window.CompareTo(x.D.Window); if (c != 0) return c;
+                return string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase);
+            });
+            SyncRows(list);
+            ProcEmpty.Visibility = list.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            double down = 0, up = 0, v = 0, dir = 0;
+            foreach (var r in lastSnap.Rows) { down += r.RDown; up += r.RUp; v += r.RP; dir += r.RD; }
+            TotalsText.Inlines.Clear();
+            TotalsText.Inlines.Add(new System.Windows.Documents.Run("Сейчас всего:  "));
+            TotalsText.Inlines.Add(new System.Windows.Documents.Run("↓ " + ProcRow.Rate(down) + "  ·  ↑ " + ProcRow.Rate(up)) { FontWeight = FontWeights.SemiBold });
+            TotalsText.Inlines.Add(new System.Windows.Documents.Run("        "));
+            var rv = new System.Windows.Documents.Run("через VPN ") { FontWeight = FontWeights.SemiBold }; rv.SetResourceReference(TextElement.ForegroundProperty, "Accent");
+            TotalsText.Inlines.Add(rv); TotalsText.Inlines.Add(new System.Windows.Documents.Run(ProcRow.Rate(v) + "        "));
+            var rd = new System.Windows.Documents.Run("напрямую ") { FontWeight = FontWeights.SemiBold }; rd.SetResourceReference(TextElement.ForegroundProperty, "Ok");
+            TotalsText.Inlines.Add(rd); TotalsText.Inlines.Add(new System.Windows.Documents.Run(ProcRow.Rate(dir)));
+
+            StatNote.Text = lastSnap.ApiOk
+                ? "Скорость и объёмы считаются с момента открытия окна. Наведите на программу, чтобы увидеть, куда она ходит; щелчок раскрывает адреса и сбои. «Без ответа» — программа отправила данные и не получила ни байта, либо соединение не установилось."
+                : "Нет связи с sing-box — VPN выключен или ещё подключается. Статистика соединений сейчас недоступна.";
+            MarkRunningApps();
         }
 
-        private async void RouteSelectedClick(object sender, RoutedEventArgs e)
+        /// <summary>Brings the visible collection in line with the wanted order with few moves (no flicker, hover and tooltips survive).</summary>
+        private void SyncRows(List<ProcRow> want)
         {
-            if (!(TrafficGrid.SelectedItem is TrafficRow row) || row.Exe.StartsWith("(")) { MessageBox.Show(this, "Выберите программу в таблице.", "VlessClient"); return; }
+            var wanted = new HashSet<ProcRow>(want);
+            for (var i = visibleRows.Count - 1; i >= 0; i--) if (!wanted.Contains(visibleRows[i])) visibleRows.RemoveAt(i);
+            for (var i = 0; i < want.Count; i++)
+            {
+                var cur = visibleRows.IndexOf(want[i]);
+                if (cur < 0) visibleRows.Insert(i, want[i]);
+                else if (cur != i) visibleRows.Move(cur, i);
+            }
+        }
+
+        private void MarkRunningApps()
+        {
+            if (!(AppsList.ItemsSource is List<AppVm> apps) || lastSnap == null) return;
+            var running = new HashSet<string>(lastSnap.Rows.Where(r => r.Running).Select(r => r.Key), StringComparer.OrdinalIgnoreCase);
+            foreach (var a in apps) a.Running = a.Processes.Any(running.Contains);
+        }
+
+        private void UpdateHeaders()
+        {
+            foreach (var b in new[] { HName, HSpeed, HTotal, HConns, HVpn, HFail })
+            {
+                var label = ((string)b.Content).TrimEnd(' ', '▲', '▼');
+                var on = (string)b.Tag == sortKey;
+                b.Content = on ? label + (sortDir < 0 ? " ▼" : " ▲") : label;
+                if (on) b.SetResourceReference(ForegroundProperty, "Accent"); else b.ClearValue(ForegroundProperty);
+            }
+        }
+
+        private void HeaderSortClick(object sender, RoutedEventArgs e)
+        {
+            var k = (string)((Button)sender).Tag;
+            if (k == sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = k == "name" ? 1 : -1; }
+            UpdateHeaders();
+            RenderProcRows();
+        }
+
+        private void FilterClick(object sender, RoutedEventArgs e)
+        {
+            if (sender == ShowAllBox) _ = SampleTraffic(); else RenderProcRows();
+        }
+
+        private void SearchChanged(object sender, TextChangedEventArgs e)
+        {
+            SearchHint.Visibility = SearchBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            RenderProcRows();
+        }
+
+        private void PlaceholderChanged(object sender, TextChangedEventArgs e)
+        {
+            var box = (TextBox)sender;
+            var hint = box == AddExeInput ? AddExeHint : box == DirectInput ? DirectHint : box == ProxyInput ? ProxyHint : null;
+            if (hint != null) hint.Visibility = box.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void ResetStatsClick(object sender, RoutedEventArgs e)
+        {
+            traffic.Reset();
+            allRows.Clear(); visibleRows.Clear(); lastSnap = null;
+            _ = SampleTraffic();
+        }
+
+        private void RowToggle(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (((FrameworkElement)sender).DataContext is ProcRow r) r.IsExpanded = !r.IsExpanded;
+        }
+
+        private void RowExpandClick(object sender, RoutedEventArgs e)
+        {
+            if (((FrameworkElement)sender).DataContext is ProcRow r) r.IsExpanded = !r.IsExpanded;
+        }
+
+        private async void RowRouteClick(object sender, RoutedEventArgs e)
+        {
+            if (!(((FrameworkElement)sender).DataContext is ProcRow r) || r.IsUnknown) return;
             var vpn = (string)((Button)sender).Tag == "vpn";
-            var existing = settings?.Objects("apps").FirstOrDefault(a => a.Strings("processes").Any(p => p.Equals(row.Exe, StringComparison.OrdinalIgnoreCase)));
-            var name = existing?.Str("name") ?? Path.GetFileNameWithoutExtension(row.Exe);
-            var procs = existing?.Strings("processes") ?? new List<string> { row.Exe };
-            await Send(new JObj().Set("cmd", "set_app").Set("name", name).Set("processes", procs).Set("vpn", vpn));
+            var exe = r.D.Name;
+            await Send(new JObj().Set("cmd", "set_app").Set("name", Path.GetFileNameWithoutExtension(exe)).Set("processes", new List<string> { exe }).Set("vpn", vpn));
             await LoadSettings();
+        }
+
+        private async void AddExeClick(object sender, RoutedEventArgs e)
+        {
+            var v = AddExeInput.Text.Trim();
+            if (v.Length == 0) return;
+            if (!v.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) v += ".exe";
+            if (v.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { MessageBox.Show(this, "Нужно имя файла вида program.exe", "VlessClient"); return; }
+            var r = await Send(new JObj().Set("cmd", "set_app").Set("name", Path.GetFileNameWithoutExtension(v)).Set("processes", new List<string> { v }).Set("vpn", (string)((Button)sender).Tag == "vpn"));
+            if (r.Bool("ok")) AddExeInput.Text = "";
+            await LoadSettings();
+        }
+
+        private void RenderAdvancedHeader(string st)
+        {
+            string text, soft, strong;
+            switch (st)
+            {
+                case "on": if (status.Bool("tun")) { text = "Туннель активен"; soft = "OkSoft"; strong = "Ok"; } else { text = "Только локальный прокси"; soft = "WarnSoft"; strong = "Warn"; } break;
+                case "connecting": text = "Подключение…"; soft = "WarnSoft"; strong = "Warn"; break;
+                case "error": text = "Нет подключения"; soft = "BadSoft"; strong = "Bad"; break;
+                default: text = "VPN выключен"; soft = "Chip"; strong = "Muted"; break;
+            }
+            AdvPillText.Text = text;
+            AdvPill.SetResourceReference(Border.BackgroundProperty, soft);
+            AdvPillText.SetResourceReference(TextBlock.ForegroundProperty, strong);
+            AdvPillDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, strong);
+
+            AdvFacts.Inlines.Clear();
+            void Fact(string label, string value)
+            {
+                if (AdvFacts.Inlines.Count > 0) AdvFacts.Inlines.Add(new System.Windows.Documents.Run("      "));
+                AdvFacts.Inlines.Add(new System.Windows.Documents.Run(label));
+                var b = new System.Windows.Documents.Run(value) { FontWeight = FontWeights.SemiBold };
+                b.SetResourceReference(TextElement.ForegroundProperty, "Text");
+                AdvFacts.Inlines.Add(b);
+            }
+            if (st == "on") Fact("Сервер: ", status.Str("node") + (status.Str("spare").Length > 0 ? " (запасной: " + status.Str("spare") + ")" : ""));
+            if (settings != null)
+            {
+                Fact("Остальной трафик: ", settings.Str("default") == "direct" ? "напрямую" : "через VPN");
+                Fact("Локальный прокси: ", "127.0.0.1:" + settings.Obj("ports").Int("proxy"));
+            }
         }
 
         private async void AppToggleClick(object sender, RoutedEventArgs e)
@@ -608,15 +807,31 @@ namespace VlessClient.Ui
 
         // ------------------------------------------------------------------ advanced: sites, servers, mode
 
-        private async void DomainClick(object sender, RoutedEventArgs e)
+        private async void DomainAddClick(object sender, RoutedEventArgs e)
         {
-            var parts = ((string)((Button)sender).Tag).Split(':');
-            var list = parts[0]; var op = parts[1];
-            string value;
-            if (op == "add") { var box = list == "direct" ? DirectInput : ProxyInput; value = box.Text.Trim(); if (value.Length == 0) return; box.Text = ""; }
-            else { value = (list == "direct" ? DirectList : ProxyList).SelectedItem as string; if (value == null) return; }
-            await Send(new JObj().Set("cmd", "set_domain").Set("list", list).Set("op", op).Set("value", value));
+            var list = (string)((Button)sender).Tag;
+            var box = list == "direct" ? DirectInput : ProxyInput;
+            var value = box.Text.Trim();
+            if (value.Length == 0) return;
+            var r = await Send(new JObj().Set("cmd", "set_domain").Set("list", list).Set("op", "add").Set("value", value));
+            if (r.Bool("ok")) box.Text = "";
             await LoadSettings();
+        }
+
+        private async void ChipRemoveClick(object sender, RoutedEventArgs e)
+        {
+            if (!(((Button)sender).Tag is ChipVm c)) return;
+            await Send(new JObj().Set("cmd", "set_domain").Set("list", c.List).Set("op", "remove").Set("value", c.Value));
+            await LoadSettings();
+        }
+
+        private void ThemeClick(object sender, RoutedEventArgs e)
+        {
+            var dark = (string)((RadioButton)sender).Tag == "dark";
+            Theme.Dark = dark;
+            Theme.Apply(dark);
+            if (status != null) RenderAdvancedHeader(status.Str("state"));
+            UpdateHeaders();
         }
 
         private async void TestNodesClick(object sender, RoutedEventArgs e)

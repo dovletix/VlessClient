@@ -28,7 +28,7 @@ namespace VlessClient
             catch (Exception e)
             {
                 Log.Write("fatal: " + e);
-                if (!a.Contains("--service") && !a.Contains("--cleanup"))
+                if (!a.Contains("--service") && !a.Contains("--cleanup") && !a.Contains("--snapshot"))
                     System.Windows.MessageBox.Show("VlessClient: " + e.Message, "VlessClient", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                 return 1;
             }

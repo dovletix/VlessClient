@@ -27,6 +27,14 @@ Windows VPN client for VLESS subscriptions, aimed at non-technical users (one bi
 - Updates: manual by default (button in Settings); `auto_update` makes the service check every 12 h and install. The service downloads the MSI from this repo's releases only, checks the SHA-256 digest and runs `msiexec /qn`; the window notices status "installing", schedules its own restart and exits; the MSI closes running copies (util:CloseApplication) so no reboot is needed.
 - Ports (localhost): mixed proxy 12080, xray SOCKS 12081, Clash API 12090 (secret in settings), probe ports 12200+.
 
+## Window look and the "Процессы" monitor
+
+- The design follows the web UI of the PowerShell edition (`ui/index.html` of that edition): same palette, pills, switches, chips, process table. `Ui/Theme.cs` holds the dark (default) and light palettes and puts them into `Application.Resources`; the choice is stored in `HKCU\Software\VlessClient\Theme`. Every colour in XAML is a `DynamicResource` with those keys (Bg, Panel, Text, Muted, Line, Accent, Ok, Bad, Warn, their *Soft variants, Chip, Track, Hover, Overlay); never hard-code colours, and never give a style a key that is also a colour key (a `Panel` style once shadowed the `Panel` brush and crashed the window).
+- A TabItem's content inherits the TabItem's own Foreground / FontWeight (logical tree), so the tab style sets them to normal text and styles only the header's ContentPresenter.
+- `Ui/Traffic.cs` is a port of the web UI's `Update-ConnStats` / `Read-NewLogErrors`: polls the Clash API `/connections` every second (off the UI thread), keeps per-exe and per-host byte counters and speeds, flags a connection that sent data but got no byte back as "no answer" (UDP counted apart), and attributes `ERROR ... open connection to X using outbound/...[tag]: reason` lines of `logs\sing-box.log` to the exe that last connected to X. Polling misses connections that open and close between two samples (short direct requests), like the web UI did.
+- `Ui/ProcRow.cs` is one table row; rows are updated in place and reordered with `ObservableCollection.Move`, so expanded rows and tooltips survive the 1 s refresh.
+- Snapshots: `VLESSCLIENT_THEME=light` renders the light theme; the snapshot mode never shows message boxes.
+
 ## Smart App Control
 
 - Windows 11 Smart App Control (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy` `VerifiedAndReputablePolicyState`: 0 off, 1 on, 2 evaluation) blocks our unsigned VlessClient.exe: SCM error 7000 "application control policy has blocked this file", CodeIntegrity 3077, and Windows Installer reports the misleading error 1920 ("insufficient privileges to start system services") and rolls back with 1603.

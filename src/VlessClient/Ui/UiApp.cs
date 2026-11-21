@@ -27,6 +27,8 @@ namespace VlessClient.Ui
         {
             System.IO.Directory.CreateDirectory(dir);
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+            var light = Environment.GetEnvironmentVariable("VLESSCLIENT_THEME") == "light";
+            Theme.Apply(!light);
             using (var client = new ServiceClient())
             {
                 var w = new MainWindow(client) { ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000 };
@@ -58,6 +60,7 @@ namespace VlessClient.Ui
                 if (startInTray && !TrayAtLogon) return 0;
 
                 var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+                Theme.Apply(Theme.Dark);
                 using (var client = new ServiceClient())
                 {
                     var window = new MainWindow(client);

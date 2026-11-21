@@ -116,7 +116,11 @@ namespace VlessClient.Service
                         var list = r.Str("list"); var value = r.Str("value").Trim(); var add = r.Str("op") != "remove";
                         if (list != "direct" && list != "proxy") return Result("Неизвестный список");
                         if (!value.StartsWith("regex:", StringComparison.OrdinalIgnoreCase))
-                            value = System.Text.RegularExpressions.Regex.Replace(value.ToLowerInvariant(), "^https?://", "").Split('/')[0];
+                        {
+                            // a pasted link keeps only its host; an IP range keeps its "/24" mask
+                            value = System.Text.RegularExpressions.Regex.Replace(value.ToLowerInvariant(), "^https?://", "");
+                            if (!System.Text.RegularExpressions.Regex.IsMatch(value, @"^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$|^[0-9a-f:]+:[0-9a-f:]*/\d{1,3}$")) value = value.Split('/')[0];
+                        }
                         if (value.Length == 0 || value.Length > 200 || value.IndexOfAny(new[] { ' ', '"', '\\', '<', '>' }) >= 0 && !value.StartsWith("regex:")) return Result("Некорректный адрес");
                         var isIp = System.Text.RegularExpressions.Regex.IsMatch(value, @"^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$|^[0-9a-f:]+:[0-9a-f:]*(/\d{1,3})?$");
                         return Result(engine.Change(s =>
