@@ -53,3 +53,4 @@ app.*.map.json
 /ios/Libbox.xcframework/
 /android/key.properties
 
+/test/goldens/

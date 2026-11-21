@@ -11,11 +11,15 @@ class PanelCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = Palette.of(context);
-    return Container(
-      margin: margin,
-      padding: padding,
-      decoration: BoxDecoration(color: p.panel, borderRadius: BorderRadius.circular(14), border: Border.all(color: p.line)),
-      child: child,
+    // a Material (not a coloured Container), so that list tiles inside keep their ink splashes
+    return Padding(
+      padding: margin,
+      child: Material(
+        color: p.panel,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: BorderSide(color: p.line)),
+        child: Padding(padding: padding, child: child),
+      ),
     );
   }
 }
