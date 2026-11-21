@@ -11,24 +11,15 @@ mkdir -p "$OUT"
 
 shot() { adb exec-out screencap -p > "$OUT/$1.png"; }
 
-# tap a bottom-bar tab by its label (Flutter exposes labels to accessibility, so uiautomator sees them)
-tap_label() {
-  adb shell uiautomator dump /sdcard/ui.xml >/dev/null
-  adb shell cat /sdcard/ui.xml > "$OUT/ui.xml"
-  python3 - "$1" "$OUT/ui.xml" <<'EOF' > "$OUT/tap.txt"
-import re, sys
-label, path = sys.argv[1], sys.argv[2]
-xml = open(path, encoding="utf-8").read()
-for node in re.findall(r"<node [^>]*>", xml):
-    if re.search(r'(content-desc|text)="[^"]*' + re.escape(label), node):
-        m = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
-        if m:
-            x1, y1, x2, y2 = map(int, m.groups())
-            print((x1 + x2) // 2, (y1 + y2) // 2)
-            break
-EOF
-  read -r x y < "$OUT/tap.txt" || { echo "label '$1' not found"; return 1; }
-  adb shell input tap "$x" "$y"
+# tap bottom-bar tab number $1 (0..4). uiautomator cannot be used: the screen redraws every second
+# (live statistics), so it never reaches the idle state it waits for. The bar is 64 dp high at the bottom.
+tap_tab() {
+  local size dens w h d
+  size=$(adb shell wm size | tail -1 | sed 's/.*: //' | tr -d '\r')
+  dens=$(adb shell wm density | tail -1 | sed 's/.*: //' | tr -d '\r')
+  w=${size%x*} h=${size#*x}
+  d=$(python3 -c "print($dens / 160)")
+  adb shell input tap "$(( w * (2 * $1 + 1) / 10 ))" "$(python3 -c "print(int($h - 34 * $d))")"
 }
 
 adb logcat -c || true
@@ -83,12 +74,19 @@ EOF
 
 # let the monitor collect a few samples, then visit every tab
 sleep 4
-for t in "Программы:2-apps" "Сайты:3-sites" "Серверы:4-servers" "Настройки:5-settings"; do
-  tap_label "${t%%:*}"
+for t in "1:2-apps" "2:3-sites" "3:4-servers" "4:5-settings"; do
+  tap_tab "${t%%:*}"
   sleep 2
   shot "${t##*:}"
+  if [ "${t%%:*}" = 1 ]; then
+    # scroll to the activity list, open the first app and look at its addresses
+    size=$(adb shell wm size | tail -1 | sed 's/.*: //' | tr -d '\r'); w=${size%x*} h=${size#*x}
+    adb shell input swipe $((w / 2)) $((h * 3 / 4)) $((w / 2)) $((h / 5)) 400
+    sleep 2
+    shot 2b-apps-activity
+  fi
 done
-tap_label "VPN"
+tap_tab 0
 sleep 1
 adb logcat -d > "$OUT/logcat.txt"
 adb shell run-as "$PKG" cat files/sing-box.log > "$OUT/sing-box.log" || true
