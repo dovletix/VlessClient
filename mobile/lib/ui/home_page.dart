@@ -193,7 +193,11 @@ class _Stat extends StatelessWidget {
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Hint(label, size: 12),
-            Text(value, style: TextStyle(color: p.text, fontSize: 15, fontWeight: FontWeight.w700)),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(value, maxLines: 1, style: TextStyle(color: p.text, fontSize: 15, fontWeight: FontWeight.w700)),
+            ),
           ]),
         ),
       ]),

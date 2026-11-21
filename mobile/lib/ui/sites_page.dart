@@ -110,7 +110,12 @@ class _ListCardState extends State<_ListCard> {
             ),
           ),
           const SizedBox(width: 8),
-          FilledButton(onPressed: _add, child: const Text('Добавить')),
+          IconButton.filled(
+            onPressed: _add,
+            tooltip: 'Добавить',
+            style: IconButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+            icon: const Icon(Icons.add),
+          ),
         ]),
       ]),
     );

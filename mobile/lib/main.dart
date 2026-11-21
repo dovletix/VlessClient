@@ -109,7 +109,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
     final app = widget.app;
     final pages = <(IconData, IconData, String, Widget)>[
       (Icons.shield_outlined, Icons.shield, 'VPN', HomePage(app: app, onOpen: (i) => setState(() => index = i))),
-      (Icons.apps_outlined, Icons.apps, app.isAndroid ? 'Приложения' : 'Трафик', AppsPage(app: app)),
+      (Icons.apps_outlined, Icons.apps, app.isAndroid ? 'Программы' : 'Трафик', AppsPage(app: app)),
       (Icons.public_outlined, Icons.public, 'Сайты', SitesPage(app: app)),
       (Icons.dns_outlined, Icons.dns, 'Серверы', ServersPage(app: app)),
       (Icons.settings_outlined, Icons.settings, 'Настройки', SettingsPage(app: app)),

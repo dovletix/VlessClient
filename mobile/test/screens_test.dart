@@ -80,8 +80,9 @@ void main() {
         }
         return null;
       });
-      tester.view.physicalSize = const Size(1080, 2400);
-      tester.view.devicePixelRatio = 2.625;
+      // the smallest common phone (320 x 640 dp), as on the CI emulator
+      tester.view.physicalSize = const Size(720, 1440);
+      tester.view.devicePixelRatio = 2.25;
       addTearDown(tester.view.reset);
 
       final app = AppState();
@@ -121,7 +122,7 @@ void main() {
         await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/$platform-$name.png'));
       }
 
-      await tab(platform == 'android' ? 'Приложения' : 'Трафик', '2-apps');
+      await tab(platform == 'android' ? 'Программы' : 'Трафик', '2-apps');
       final first = find.text(platform == 'android' ? 'YouTube' : 'Все приложения');
       await tester.ensureVisible(first.last);
       await tester.tap(first.last);
@@ -133,7 +134,7 @@ void main() {
       await app.change((s) => s.theme = 'light');
       await tester.pump(const Duration(milliseconds: 300));
       await tab('VPN', '6-home-light');
-      await tab(platform == 'android' ? 'Приложения' : 'Трафик', '7-apps-light');
+      await tab(platform == 'android' ? 'Программы' : 'Трафик', '7-apps-light');
       app.pause();
     });
   }

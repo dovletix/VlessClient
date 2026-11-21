@@ -93,7 +93,8 @@ class Palette {
         surfaceTintColor: Colors.transparent,
         iconTheme: WidgetStateProperty.resolveWith((s) => IconThemeData(color: s.contains(WidgetState.selected) ? accent : muted)),
         labelTextStyle: WidgetStateProperty.resolveWith(
-            (s) => TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: s.contains(WidgetState.selected) ? accent : muted)),
+            // 11 sp: "Программы" and "Настройки" must fit a 64 dp slot on a 320 dp phone
+            (s) => TextStyle(fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0, color: s.contains(WidgetState.selected) ? accent : muted)),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,

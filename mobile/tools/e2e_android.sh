@@ -68,13 +68,22 @@ EOF
 adb shell "printf 'GET /generate_204 HTTP/1.1\r\nHost: connectivitycheck.gstatic.com\r\nConnection: close\r\n\r\n' | toybox nc -w 10 connectivitycheck.gstatic.com 80" > "$OUT/nc.txt" || true
 sleep 2
 curl -fsS -H "Authorization: Bearer $SECRET" http://127.0.0.1:12090/connections > "$OUT/connections.json" || true
-cat "$OUT/nc.txt" | head -3
-grep -q "connectivitycheck.gstatic.com:80" "$SERVER_LOG" || { echo "the request did not reach the VLESS server"; tail -50 "$SERVER_LOG"; exit 1; }
+head -3 "$OUT/nc.txt"
+grep -q "HTTP/1.1 204" "$OUT/nc.txt" || { echo "no answer to the request from the phone"; exit 1; }
+# sing-box sends the server the IP it connected to (sniffing does not override the destination)
+grep -q "inbound connection to [0-9.]*:80$" "$SERVER_LOG" || { echo "the request did not reach the VLESS server"; tail -50 "$SERVER_LOG"; exit 1; }
 echo "tunnel OK: the request went through the VLESS server"
+python3 - "$OUT/connections.json" <<'EOF'
+import json, sys
+c = json.load(open(sys.argv[1]))["connections"]
+apps = sorted({x["metadata"].get("processPath", "").split(" (")[0] for x in c} - {""})
+print("connections:", len(c), "apps seen by the monitor:", apps)
+assert apps, "no connection was attributed to an app"
+EOF
 
 # let the monitor collect a few samples, then visit every tab
 sleep 4
-for t in "Приложения:2-apps" "Сайты:3-sites" "Серверы:4-servers" "Настройки:5-settings"; do
+for t in "Программы:2-apps" "Сайты:3-sites" "Серверы:4-servers" "Настройки:5-settings"; do
   tap_label "${t%%:*}"
   sleep 2
   shot "${t##*:}"

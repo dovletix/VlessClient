@@ -89,7 +89,7 @@ class _AppsPageState extends State<AppsPage> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
           children: [
-            Text(app.isAndroid ? 'Приложения' : 'Трафик', style: TextStyle(color: p.text, fontSize: 22, fontWeight: FontWeight.w800)),
+            Text(app.isAndroid ? 'Программы' : 'Трафик', style: TextStyle(color: p.text, fontSize: 22, fontWeight: FontWeight.w800)),
             const SizedBox(height: 14),
             if (app.isAndroid) _rulesCard(p),
             PanelCard(
