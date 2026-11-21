@@ -65,6 +65,7 @@ jobs:
           unzip -q -o "$dl/xray.zip" xray -d "$dl"
           CONFIG_OUT="$RUNNER_TEMP/cfg" flutter test test/config_files_test.dart
           "$dl/sing-box" check -c "$RUNNER_TEMP/cfg/sing-box.json"
+          "$dl/sing-box" check -c "$RUNNER_TEMP/cfg/probe.json"
           "$dl/xray" run -test -c "$RUNNER_TEMP/cfg/xray.json"
 
   geo:
@@ -305,7 +306,24 @@ jobs:
            "outbounds": [{"protocol": "freedom"}]}
           EOF
           nohup ./xray run -c xray-server.json > xray-stdout.log 2>&1 &
-          sleep 2 && ss -ltn | grep -E '10443|10444'
+          # a Reality + Vision server on the same Xray as current 3x-ui panels: since 26.9.8 it refuses sing-box's
+          # Reality handshake, so the phone has to reach it through its bundled Xray
+          keys=$(./xray x25519)
+          priv=$(echo "$keys" | grep -i 'private' | head -1 | awk -F': *' '{print $2}')
+          pbk=$(echo "$keys" | grep -iE 'public|password' | head -1 | awk -F': *' '{print $2}')
+          [ -n "$priv" ] && [ -n "$pbk" ] || { echo "cannot parse: $keys"; exit 1; }
+          echo "REALITY_PBK=$pbk" >> "$GITHUB_ENV"
+          cat > xray-reality.json <<EOF
+          {"log": {"loglevel": "info", "access": "$RUNNER_TEMP/xray-reality-access.log", "error": "$RUNNER_TEMP/xray-reality-error.log"},
+           "inbounds": [{"listen": "0.0.0.0", "port": 10445, "protocol": "vless",
+                         "settings": {"clients": [{"id": "$E2E_UUID", "flow": "xtls-rprx-vision"}], "decryption": "none"},
+                         "streamSettings": {"network": "raw", "security": "reality",
+                                            "realitySettings": {"target": "www.google.com:443", "serverNames": ["www.google.com"],
+                                                                "privateKey": "$priv", "shortIds": ["0123abcd"]}}}],
+           "outbounds": [{"protocol": "freedom"}]}
+          EOF
+          nohup ./xray run -c xray-reality.json > xray-reality-stdout.log 2>&1 &
+          sleep 2 && ss -ltn | grep -E '10443|10444|10445'
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

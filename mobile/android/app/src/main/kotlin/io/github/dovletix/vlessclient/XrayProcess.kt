@@ -24,6 +24,9 @@ object XrayProcess {
 
     fun configFile(ctx: Context) = File(ctx.filesDir, "xray.json")
 
+    /** The config of the node check that runs while the tunnel is off (BoxVpnService.ACTION_PROBE). */
+    fun probeConfigFile(ctx: Context) = File(ctx.filesDir, "xray-probe.json")
+
     private fun alive(p: Process?): Boolean {
         if (p == null) return false
         return try {
@@ -34,17 +37,16 @@ object XrayProcess {
         }
     }
 
-    /** (Re)starts Xray with files/xray.json; stops it when there is no such file (no node needs Xray). */
+    /** (Re)starts Xray with [cfg] (files/xray.json for the tunnel); stops it when there is no such file (no node needs Xray). */
     @Synchronized
-    fun start(ctx: Context) {
+    fun start(ctx: Context, cfg: File = configFile(ctx)) {
         stop()
-        val cfg = configFile(ctx)
         if (!cfg.exists() || cfg.length() == 0L) return
         if (!available(ctx)) error("в этой сборке нет Xray, серверы XHTTP недоступны")
         killStale()
         wanted = true
         restarts = 0
-        launch(ctx)
+        launch(ctx, cfg)
         watchdog = thread(name = "xray-watchdog", isDaemon = true) {
             while (wanted) {
                 try {
@@ -56,15 +58,15 @@ object XrayProcess {
                     if (wanted && !alive(proc) && restarts < 20) {
                         restarts++
                         Log.w(TAG, "xray exited, restarting ($restarts)")
-                        launch(ctx)
+                        launch(ctx, cfg)
                     }
                 }
             }
         }
     }
 
-    private fun launch(ctx: Context) {
-        val pb = ProcessBuilder(binary(ctx).path, "run", "-c", configFile(ctx).path)
+    private fun launch(ctx: Context, cfg: File) {
+        val pb = ProcessBuilder(binary(ctx).path, "run", "-c", cfg.path)
             .directory(ctx.filesDir)
             .redirectErrorStream(true)
         pb.environment()["XRAY_LOCATION_ASSET"] = ctx.filesDir.path

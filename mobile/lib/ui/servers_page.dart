@@ -38,7 +38,11 @@ class ServersPage extends StatelessWidget {
               ),
             ]),
             const SizedBox(height: 6),
-            const Hint('Время — полный запрос через сервер; меньше — лучше.', size: 12),
+            Hint(
+                'Время — полный запрос через сервер; меньше — лучше. '
+                '${app.running ? 'Проверка идёт через включённый VPN.' : 'VPN включать не нужно: серверы проверяются и без него.'}'
+                '${app.checkedAt == null ? '' : ' Последняя проверка в ${_hm(app.checkedAt!)}${app.checkedWithoutTunnel ? ', без VPN' : ', через VPN'}.'}',
+                size: 12),
             const SizedBox(height: 12),
             if (app.nodes.isEmpty)
               const PanelCard(child: Hint('Список серверов пуст. Добавьте подписку на вкладке «VPN» или в «Настройках».'))
@@ -110,6 +114,8 @@ class ServersPage extends StatelessWidget {
     );
   }
 }
+
+String _hm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
 class _ExcludeField extends StatefulWidget {
   const _ExcludeField({required this.app});

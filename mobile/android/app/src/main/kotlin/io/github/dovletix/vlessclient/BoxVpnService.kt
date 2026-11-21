@@ -58,15 +58,30 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
         const val ACTION_START = "io.github.dovletix.vlessclient.START"
         const val ACTION_RELOAD = "io.github.dovletix.vlessclient.RELOAD"
         const val ACTION_STOP = "io.github.dovletix.vlessclient.STOP"
+        const val ACTION_PROBE = "io.github.dovletix.vlessclient.PROBE"
+        const val ACTION_PROBE_STOP = "io.github.dovletix.vlessclient.PROBE_STOP"
         private const val CHANNEL = "vpn"
         private const val NOTIFICATION_ID = 1
 
         @Volatile var running = false
         @Volatile var starting = false
         @Volatile var lastError = ""
+
+        // the node check while the tunnel is off: sing-box with only the nodes, no TUN (files/probe.json)
+        @Volatile var probing = false
+        @Volatile var probeStarting = false
+        @Volatile var probeError = ""
         private var setupDone = false
 
         fun configFile(ctx: Context) = File(ctx.filesDir, "config.json")
+
+        fun probeFile(ctx: Context) = File(ctx.filesDir, "probe.json")
+
+        /** A plain (not foreground) start: the check runs while the app is open and shows no VPN and no notification. */
+        fun probe(ctx: Context, start: Boolean) {
+            if (!start && !probing && !probeStarting) return
+            ctx.startService(Intent(ctx, BoxVpnService::class.java).setAction(if (start) ACTION_PROBE else ACTION_PROBE_STOP))
+        }
 
         fun send(ctx: Context, action: String) {
             val intent = Intent(ctx, BoxVpnService::class.java).setAction(action)
@@ -101,12 +116,15 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
 
     private val worker = Executors.newSingleThreadExecutor()
     private var server: CommandServer? = null
+    private var probeServer: CommandServer? = null
     private var tun: ParcelFileDescriptor? = null
     private val connectivity by lazy { getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> worker.execute { stopTunnel() }
+            ACTION_PROBE -> worker.execute { startProbe() }
+            ACTION_PROBE_STOP -> worker.execute { stopProbe() }
             ACTION_RELOAD -> {
                 foreground()
                 worker.execute { reloadTunnel() }
@@ -126,7 +144,10 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
     }
 
     override fun onDestroy() {
-        worker.execute { stopTunnel() }
+        worker.execute {
+            stopProbe()
+            stopTunnel()
+        }
         worker.shutdown()
         super.onDestroy()
     }
@@ -168,6 +189,8 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
             return
         }
         starting = true
+        // the check and the tunnel use the same local ports and libbox's command socket
+        if (probeServer != null || probing) stopProbe(keepService = true)
         lastError = ""
         try {
             setup(this)
@@ -236,6 +259,56 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
         stopSelf()
     }
 
+    // ------------------------------------------------------------------ node check without the tunnel
+
+    /**
+     * sing-box with files/probe.json: only the nodes and the Clash API, no tun inbound, so openTun is never called
+     * and Android shows no VPN. Its sockets are not protected (nothing to protect them from while the tunnel is off).
+     */
+    private fun startProbe() {
+        try {
+            if (running || starting || server != null) error("VPN уже включён")
+            stopProbe(keepService = true)
+            probeError = ""
+            setup(this)
+            DefaultNetworkMonitor.start(this)
+            XrayProcess.start(this, XrayProcess.probeConfigFile(this))
+            val s = CommandServer(this, this)
+            s.start()
+            probeServer = s
+            s.startOrReloadService(probeFile(this).readText(), OverrideOptions())
+            probing = true
+        } catch (e: Exception) {
+            Log.e(TAG, "probe", e)
+            probeError = e.message ?: e.toString()
+            stopProbe()
+        } finally {
+            probeStarting = false
+        }
+    }
+
+    private fun stopProbe(keepService: Boolean = false) {
+        probing = false
+        val s = probeServer
+        probeServer = null
+        if (s != null) {
+            try {
+                s.closeService()
+            } catch (e: Exception) {
+                Log.w(TAG, "close probe", e)
+            }
+            try {
+                s.close()
+            } catch (_: Exception) {
+            }
+        }
+        if (server == null && !running) {
+            XrayProcess.stop()
+            DefaultNetworkMonitor.stop()
+            if (!keepService && !starting) stopSelf()
+        }
+    }
+
     // ------------------------------------------------------------------ CommandServerHandler
 
     override fun serviceStop() {
@@ -264,7 +337,7 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
 
     override fun autoDetectInterfaceControl(fd: Int) {
         // sing-box's own sockets (to the VLESS servers, direct traffic) must bypass the tunnel
-        protect(fd)
+        if (server != null) protect(fd)
     }
 
     override fun openTun(options: TunOptions): Int {

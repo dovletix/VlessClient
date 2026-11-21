@@ -41,6 +41,16 @@ final class VpnChannel {
             case "stop":
                 try await loadManager()?.connection.stopVPNTunnel()
                 result(nil)
+            case "probeStart":
+                let s = try await loadManager()?.connection.status ?? .invalid
+                if s == .connected || s == .connecting || s == .reasserting {
+                    throw NSError(domain: "VlessClient", code: 3, userInfo: [NSLocalizedDescriptionKey: "VPN уже включён"])
+                }
+                try await Prober.shared.start(args["config"] as? String ?? "")
+                result(nil)
+            case "probeStop":
+                await Prober.shared.stop()
+                result(nil)
             case "status":
                 let m = try await loadManager()
                 let s = m?.connection.status ?? .invalid

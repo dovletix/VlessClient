@@ -32,6 +32,8 @@ void main() {
     s.ruDirect = false; // the geo rule-sets are binary files built in CI
     final sb = SingBoxConfig.build(s, nodes, NodePlan.make(s, nodes)!, dataDir: dir.path.replaceAll('\\', '/'), os: MobileOs.android);
     File('${dir.path}/sing-box.json').writeAsStringSync(const JsonEncoder.withIndent('  ').convert(sb));
+    final probe = SingBoxConfig.buildProbe(s, nodes, dataDir: dir.path.replaceAll('\\', '/'), apiPort: s.apiPort + 1);
+    File('${dir.path}/probe.json').writeAsStringSync(const JsonEncoder.withIndent('  ').convert(probe));
     final x = XrayConfig.build(nodes, '${dir.path}/xray.log'.replaceAll('\\', '/'))!;
     File('${dir.path}/xray.json').writeAsStringSync(const JsonEncoder.withIndent('  ').convert(x));
     Node.xrayAvailable = false;

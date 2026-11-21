@@ -191,6 +191,36 @@ class SingBoxConfig {
     return o;
   }
 
+  // ------------------------------------------------------------------ node check without the tunnel
+
+  /// A sing-box with only the nodes and the Clash API, for "Проверить" while the VPN is off: no TUN, so no VPN icon
+  /// and no change for other apps; the requests leave the phone the same way the tunnel's would. [apiPort] is not the
+  /// tunnel's, so a leftover check can never be taken for a running tunnel.
+  static Map<String, dynamic> buildProbe(Settings s, List<Node> all, {required String dataDir, required int apiPort}) {
+    final xray = all.any((n) => n.supported && n.viaXray);
+    return {
+      'log': {'level': 'warn', 'output': '$dataDir/probe.log', 'timestamp': true},
+      'dns': {
+        'servers': [
+          {'type': 'local', 'tag': 'dns-direct'},
+        ],
+        'final': 'dns-direct',
+        'strategy': 'ipv4_only',
+      },
+      'inbounds': [
+        if (xray) {'type': 'mixed', 'tag': 'xray-in', 'listen': '127.0.0.1', 'listen_port': XrayConfig.dialerPort},
+      ],
+      'outbounds': [
+        ...all.map(outbound).whereType<Map<String, dynamic>>(),
+        {'type': 'direct', 'tag': 'direct'},
+      ],
+      'route': {'final': 'direct', 'default_domain_resolver': 'dns-direct'},
+      'experimental': {
+        'clash_api': {'external_controller': '127.0.0.1:$apiPort', 'secret': s.apiSecret},
+      },
+    };
+  }
+
   // ------------------------------------------------------------------ main config
 
   static void _addRoute(List<Object> list, Map<String, dynamic> match, String target, bool blockQuic) {

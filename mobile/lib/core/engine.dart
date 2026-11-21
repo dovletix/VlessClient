@@ -220,6 +220,13 @@ class AppState extends ChangeNotifier {
         _set(VpnState.noSubscription, 'Нужна ссылка на подписку');
         return;
       }
+      final probe = _probeRun;
+      if (probe != null) {
+        _set(VpnState.connecting, 'Заканчиваю проверку серверов…');
+        try {
+          await probe;
+        } catch (_) {}
+      }
       _set(VpnState.connecting, 'Загружаю список серверов…');
       final stale = subscriptionTime == null || DateTime.now().difference(subscriptionTime!).inHours >= settings.updateHours;
       if (settings.canDownload && (nodes.isEmpty || stale)) {
@@ -516,22 +523,96 @@ class AppState extends ChangeNotifier {
         if (value != 'auto') s.lastGoodNode = '';
       }, reconnect: true);
 
-  /// Measures every supported node through the running tunnel (Clash API delay test).
+  /// Measures every supported node: through the running tunnel, or, while the VPN is off, through a separate
+  /// sing-box with only the nodes (no tunnel: other apps are not affected and the phone shows no VPN).
   Future<String?> testNodes() async {
-    if (!running) return 'Включите VPN — серверы проверяются через туннель.';
+    if (testing) return null;
+    final list = nodes.where((n) => n.supported).toList();
+    if (list.isEmpty) return nodes.isEmpty ? 'Список серверов пуст.' : 'Ни один сервер из подписки не работает на этом телефоне.';
+    if (_busy || state == VpnState.connecting) return 'Подождите, VPN включается.';
     testing = true;
     notifyListeners();
+    final run = running ? _testThroughTunnel(list) : _testWithoutTunnel(list);
+    if (!running) _probeRun = run;
     try {
-      final list = nodes.where((n) => n.supported).toList();
-      final res = await Future.wait(list.map((n) => api.delay(n.tag)));
-      for (var i = 0; i < list.length; i++) {
-        delays[list[i].tag] = res[i];
-      }
-      return null;
+      return await run;
     } finally {
+      _probeRun = null;
       testing = false;
       notifyListeners();
     }
+  }
+
+  /// The check that runs without the tunnel; connect() waits for it (both use the same local ports).
+  Future<String?>? _probeRun;
+  DateTime? checkedAt;
+  bool checkedWithoutTunnel = false;
+
+  Future<String?> _testThroughTunnel(List<Node> list) async {
+    final res = await Future.wait(list.map((n) => api.delay(n.tag)));
+    _storeDelays(list, res, withoutTunnel: false);
+    return null;
+  }
+
+  Future<String?> _testWithoutTunnel(List<Node> list) async {
+    final probe = ClashApi(settings.apiPort + 1, settings.apiSecret);
+    try {
+      final config = jsonEncode(SingBoxConfig.buildProbe(settings, nodes, dataDir: dataDir, apiPort: probe.port));
+      final x = XrayConfig.build(nodes, '$dataDir/xray-probe.log');
+      for (final f in ['$dataDir/probe.log', '$dataDir/xray-probe.log']) {
+        try {
+          File(f).deleteSync();
+        } catch (_) {}
+      }
+      await vpn.probeStart(config, xray: x == null ? '' : jsonEncode(x));
+      var alive = false;
+      for (var i = 0; i < 50 && !alive; i++) {
+        alive = await probe.alive();
+        if (!alive) await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      if (!alive) return 'Не удалось запустить проверку серверов.';
+      // Xray starts next to sing-box; a request through a node of its own before it listens would count as dead
+      final first = list.where((n) => n.viaXray).firstOrNull;
+      if (first != null) await _waitPort(XrayConfig.portOf(first), const Duration(seconds: 5));
+      final res = await Future.wait(list.map((n) => probe.delay(n.tag)));
+      _storeDelays(list, res, withoutTunnel: true);
+      return null;
+    } on PlatformException catch (e) {
+      return 'Не удалось проверить серверы: ${e.message ?? e.code}';
+    } finally {
+      try {
+        await vpn.probeStop();
+      } catch (_) {}
+      probe.close();
+    }
+  }
+
+  static Future<void> _waitPort(int port, Duration limit) async {
+    final end = DateTime.now().add(limit);
+    while (DateTime.now().isBefore(end)) {
+      try {
+        final s = await Socket.connect('127.0.0.1', port, timeout: const Duration(milliseconds: 300));
+        s.destroy();
+        return;
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+    }
+  }
+
+  void _storeDelays(List<Node> list, List<int?> res, {required bool withoutTunnel}) {
+    for (var i = 0; i < list.length; i++) {
+      delays[list[i].tag] = res[i];
+    }
+    checkedAt = DateTime.now();
+    checkedWithoutTunnel = withoutTunnel;
+    try {
+      File('$dataDir/last-check.json').writeAsStringSync(jsonEncode({
+        'time': checkedAt!.toIso8601String(),
+        'tunnel': !withoutTunnel,
+        'delays': {for (var i = 0; i < list.length; i++) list[i].tag: res[i]},
+      }));
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------------ updates (Android: GitHub releases)
@@ -645,7 +726,7 @@ class AppState extends ChangeNotifier {
     b.writeln('subscription host: $host  inline: ${s.inlineNodes}  cached: $subscriptionTime  nodes: ${nodes.length}');
     b.writeln('default: ${s.defaultRoute}  node setting: ${s.node}  auto_exclude: ${s.autoExclude}  ru_direct: ${s.ruDirect} geo: $geoAvailable');
     b.writeln('apps: ${s.apps.map((a) => '${a.name}=${a.vpn ? 'vpn' : 'direct'}').join('; ')}');
-    b.writeln('nodes:');
+    b.writeln('nodes: (checked ${checkedAt ?? '-'}${checkedAt == null ? '' : checkedWithoutTunnel ? ' without tunnel' : ' through tunnel'})');
     for (final n in nodes) {
       final d = delays[n.tag];
       b.writeln('  ${n.index.toString().padLeft(2)} ${n.name}  ${n.kind}${n.viaXray ? '  via xray' : ''}'

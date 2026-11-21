@@ -145,13 +145,15 @@ void main() {
   group('xray', () {
     tearDown(() => Node.xrayAvailable = false);
 
-    test('xhttp nodes go through the bundled Xray when it is there', () {
-      final nodes = Subscription.parseAll('$reality\n$xhttp');
+    test('xhttp and reality nodes go through the bundled Xray when it is there', () {
+      final nodes = Subscription.parseAll('$reality\n$xhttp\n$ws');
       expect(nodes[1].viaXray, isFalse);
+      expect(nodes[0].supported, isTrue, reason: 'without Xray sing-box carries tcp+reality itself');
       Node.xrayAvailable = true;
-      expect(nodes[0].viaXray, isFalse, reason: 'sing-box handles tcp+reality itself');
+      expect(nodes[0].viaXray, isTrue, reason: 'Xray servers since 26.9.8 refuse the Reality handshake of sing-box');
       expect(nodes[1].viaXray, isTrue);
       expect(nodes[1].supported, isTrue);
+      expect(nodes[2].viaXray, isFalse, reason: 'ws+tls stays with sing-box');
 
       final s = Settings()..apiSecret = 'x';
       final c = SingBoxConfig.build(s, nodes, NodePlan.make(s, nodes)!, dataDir: '/d', os: MobileOs.android);
@@ -159,25 +161,50 @@ void main() {
       final relay = outs.firstWhere((o) => o['tag'] == 'node-02');
       expect(relay['type'], 'socks');
       expect(relay['server_port'], XrayConfig.basePort + 2);
-      expect(((c['outbounds'] as List).first as Map)['outbounds'], ['node-01', 'node-02']);
+      expect(outs.firstWhere((o) => o['tag'] == 'node-03')['type'], 'vless');
+      expect(((c['outbounds'] as List).first as Map)['outbounds'], ['node-01', 'node-02', 'node-03']);
       final rules = ((c['route'] as Map)['rules'] as List).cast<Map>();
       expect(rules.first, {'inbound': ['xray-in'], 'outbound': 'direct'});
       expect((c['inbounds'] as List).any((i) => (i as Map)['tag'] == 'xray-in'), isTrue);
 
       final x = XrayConfig.build(nodes, '/d/xray.log')!;
       final ins = (x['inbounds'] as List).cast<Map>();
-      expect(ins.single['port'], XrayConfig.basePort + 2);
+      expect(ins.map((i) => i['port']), [XrayConfig.basePort + 1, XrayConfig.basePort + 2]);
       final vless = (x['outbounds'] as List).cast<Map>().firstWhere((o) => o['tag'] == 'node-02');
       final stream = vless['streamSettings'] as Map;
       expect(stream['network'], 'xhttp');
       expect(stream['security'], 'reality');
       expect((stream['sockopt'] as Map)['dialerProxy'], 'via-singbox');
+      final vision = (x['outbounds'] as List).cast<Map>().firstWhere((o) => o['tag'] == 'node-01');
+      expect((((vision['settings'] as Map)['vnext'] as List).first as Map)['users'], [
+        {'id': '11111111-2222-3333-4444-555555555555', 'encryption': 'none', 'flow': 'xtls-rprx-vision'},
+      ]);
+      expect((vision['streamSettings'] as Map)['network'], 'raw');
       expect(jsonDecode(jsonEncode(x)), isA<Map>());
+    });
+
+    test('the node check without the tunnel has no TUN and its own API port', () {
+      Node.xrayAvailable = true;
+      final nodes = Subscription.parseAll('$reality\n$xhttp');
+      final s = Settings()..apiSecret = 'x';
+      final c = SingBoxConfig.build(s, nodes, NodePlan.make(s, nodes)!, dataDir: '/d', os: MobileOs.android);
+      final p = SingBoxConfig.buildProbe(s, nodes, dataDir: '/d', apiPort: s.apiPort + 1);
+      final ins = (p['inbounds'] as List).cast<Map>();
+      expect(ins.map((i) => i['type']), ['mixed'], reason: 'only the inbound for the bundled Xray, no tun');
+      expect(ins.single['listen_port'], XrayConfig.dialerPort);
+      final tags = (p['outbounds'] as List).cast<Map>().map((o) => o['tag']).toList();
+      expect(tags, ['node-01', 'node-02', 'direct']);
+      // the same outbounds as the tunnel uses, so the check measures what the tunnel would get
+      final tunnelOuts = (c['outbounds'] as List).cast<Map>().where((o) => (o['tag'] as String).startsWith('node-'));
+      expect(jsonEncode((p['outbounds'] as List).take(2).toList()), jsonEncode(tunnelOuts.toList()));
+      expect(((p['experimental'] as Map)['clash_api'] as Map)['external_controller'], '127.0.0.1:${s.apiPort + 1}');
+      expect((p['route'] as Map)['final'], 'direct');
+      expect(jsonEncode(p).contains('tun'), isFalse);
     });
 
     test('no Xray config and no xray-in inbound without such nodes', () {
       Node.xrayAvailable = true;
-      final nodes = Subscription.parseAll(reality);
+      final nodes = Subscription.parseAll(ws);
       expect(XrayConfig.build(nodes, '/d/xray.log'), isNull);
       final s = Settings()..apiSecret = 'x';
       final c = SingBoxConfig.build(s, nodes, NodePlan.make(s, nodes)!, dataDir: '/d', os: MobileOs.android);

@@ -57,8 +57,10 @@ class Node {
     return transports.contains(network) && (security.isEmpty || security == 'none' || security == 'tls' || security == 'reality');
   }
 
-  /// This node goes through the bundled Xray (sing-box connects to it over a local SOCKS port).
-  bool get viaXray => singboxReason != null && xrayAvailable && _xrayCan;
+  /// This node goes through the bundled Xray (sing-box connects to it over a local SOCKS port): what sing-box cannot
+  /// carry, and every Reality node. Xray servers since v26.9.8 refuse sing-box's Reality handshake (it sends no
+  /// X25519MLKEM768 key share, SagerNet/sing-box#4520), and 3x-ui panels update their Xray by themselves.
+  bool get viaXray => xrayAvailable && _xrayCan && (singboxReason != null || security == 'reality');
 
   /// Why the phone cannot use this node at all; null when it can.
   String? get unsupportedReason {

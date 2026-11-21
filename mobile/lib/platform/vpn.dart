@@ -44,6 +44,12 @@ class Vpn {
 
   Future<void> stop() => _ch.invokeMethod('stop');
 
+  /// Starts a sing-box (plus Xray when a node needs it) that only measures the nodes while the tunnel is off:
+  /// no TUN, no VPN icon. Returns once its Clash API can start listening, throws when it could not start.
+  Future<void> probeStart(String config, {String xray = ''}) => _ch.invokeMethod('probeStart', {'config': config, 'xray': xray});
+
+  Future<void> probeStop() => _ch.invokeMethod('probeStop');
+
   Future<NativeStatus> status() async {
     final m = await _ch.invokeMapMethod<String, dynamic>('status') ?? {};
     return NativeStatus(running: m['running'] == true, starting: m['starting'] == true, error: (m['error'] ?? '').toString());

@@ -108,6 +108,40 @@ class MainActivity : FlutterActivity() {
                 BoxVpnService.send(this, BoxVpnService.ACTION_STOP)
                 result.success(null)
             }
+            "probeStart" -> {
+                val config = call.argument<String>("config") ?: return result.error("args", "no config", null)
+                val xray = call.argument<String>("xray")
+                background(result) {
+                    if (BoxVpnService.running || BoxVpnService.starting) error("VPN уже включён")
+                    BoxVpnService.probeFile(this).writeText(config)
+                    val xf = XrayProcess.probeConfigFile(this)
+                    if (xray.isNullOrEmpty()) xf.delete() else xf.writeText(xray)
+                    BoxVpnService.probeError = ""
+                    BoxVpnService.probeStarting = true
+                    try {
+                        BoxVpnService.probe(this, true)
+                    } catch (e: Exception) {
+                        BoxVpnService.probeStarting = false
+                        throw e
+                    }
+                    // the service's worker starts sing-box (and Xray) within a second or two
+                    var waited = 0
+                    while (BoxVpnService.probeStarting && waited < 20000) {
+                        Thread.sleep(50)
+                        waited += 50
+                    }
+                    if (BoxVpnService.probeError.isNotEmpty()) error(BoxVpnService.probeError)
+                    if (!BoxVpnService.probing) error("проверка не запустилась")
+                    null
+                }
+            }
+            "probeStop" -> {
+                try {
+                    BoxVpnService.probe(this, false)
+                } catch (_: Exception) {
+                }
+                result.success(null)
+            }
             "status" -> result.success(
                 mapOf("running" to BoxVpnService.running, "starting" to BoxVpnService.starting, "error" to BoxVpnService.lastError),
             )

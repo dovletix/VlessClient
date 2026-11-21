@@ -1,6 +1,7 @@
 # Adds the Packet Tunnel extension (ios/PacketTunnel) to the Flutter Runner project, links it with
 # Libbox.xcframework (sing-box, built in CI) and NetworkExtension, embeds it into the app, and adds
-# ios/Runner/VpnChannel.swift plus the app's entitlements to Runner. Runs in CI on macOS before
+# ios/Runner/VpnChannel.swift, ios/Runner/Prober.swift (the node check without the tunnel, which links
+# Libbox into the app as well) plus the app's entitlements to Runner. Runs in CI on macOS before
 # `flutter build ios`; it is idempotent, so running it twice changes nothing.
 #
 # usage: ruby add_tunnel_target.rb ios/Runner.xcodeproj <version> <build>
@@ -12,20 +13,33 @@ build ||= '1'
 project = Xcodeproj::Project.open(project_path)
 runner = project.targets.find { |t| t.name == 'Runner' } or abort 'no Runner target'
 
-# Runner: the channel to the tunnel and the entitlements
+# Runner: the channel to the tunnel, the node check without the tunnel (Prober.swift, links libbox too)
+# and the entitlements
 runner_group = project.main_group.find_subpath('Runner', false) or abort 'no Runner group'
-unless runner_group.files.any? { |f| f.path == 'VpnChannel.swift' }
-  ref = runner_group.new_reference('VpnChannel.swift')
+%w[VpnChannel.swift Prober.swift].each do |name|
+  next if runner_group.files.any? { |f| f.path == name }
+  ref = runner_group.new_reference(name)
   runner.add_file_references([ref])
 end
 runner_group.new_reference('Runner.entitlements') unless runner_group.files.any? { |f| f.path == 'Runner.entitlements' }
 
 ne = project.frameworks_group.files.find { |f| f.path&.end_with?('NetworkExtension.framework') } ||
      project.frameworks_group.new_file('System/Library/Frameworks/NetworkExtension.framework', :sdk_root)
+libbox = project.frameworks_group.files.find { |f| f.path == 'Libbox.xcframework' }
+unless libbox
+  libbox = project.frameworks_group.new_reference('Libbox.xcframework')
+  libbox.source_tree = 'SOURCE_ROOT'
+  libbox.last_known_file_type = 'wrapper.xcframework'
+end
 runner.frameworks_build_phase.add_file_reference(ne, true)
+# a static library (gomobile): linked into each binary that uses it, nothing to embed
+runner.frameworks_build_phase.add_file_reference(libbox, true)
 runner.build_configurations.each do |c|
-  c.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'Runner/Runner.entitlements'
-  c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+  s = c.build_settings
+  s['CODE_SIGN_ENTITLEMENTS'] = 'Runner/Runner.entitlements'
+  s['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+  s['OTHER_LDFLAGS'] = ['$(inherited)', '-lresolv']
+  s['FRAMEWORK_SEARCH_PATHS'] = ['$(inherited)', '$(PROJECT_DIR)']
 end
 
 ext = project.targets.find { |t| t.name == 'PacketTunnel' }
@@ -40,9 +54,6 @@ unless ext
   group.new_reference('Info.plist')
   group.new_reference('PacketTunnel.entitlements')
 
-  libbox = project.frameworks_group.new_reference('Libbox.xcframework')
-  libbox.source_tree = 'SOURCE_ROOT'
-  libbox.last_known_file_type = 'wrapper.xcframework'
   ext.frameworks_build_phase.add_file_reference(libbox, true)
   ext.frameworks_build_phase.add_file_reference(ne, true)
 
