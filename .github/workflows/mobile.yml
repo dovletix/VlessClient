@@ -22,6 +22,8 @@ env:
   GOMOBILE_VERSION: 'v0.1.13'
   FLUTTER_VERSION: '3.47.9'
   # what the phone needs from sing-box: TUN (gvisor), QUIC, uTLS/Reality, Clash API
+  # bump LIBBOX_CACHE whenever the tags or flags below change (the built library is cached)
+  LIBBOX_CACHE: '1'
   LIBBOX_TAGS: 'with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0'
   LIBBOX_LDFLAGS: '-X github.com/sagernet/sing-box/constant.Version=1.14.4 -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -s -w -buildid='
   # the geo databases are the ones the Windows MSI ships (cores.ps1)
@@ -84,7 +86,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dist/libbox.aar
-          key: libbox-android-${{ env.SING_BOX_VERSION }}-${{ env.GO_VERSION }}-${{ env.GOMOBILE_VERSION }}-${{ env.LIBBOX_TAGS }}-1
+          key: libbox-android-${{ env.SING_BOX_VERSION }}-${{ env.GO_VERSION }}-${{ env.GOMOBILE_VERSION }}-${{ env.LIBBOX_CACHE }}
       - uses: actions/setup-go@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
@@ -121,6 +123,42 @@ jobs:
         with:
           name: libbox-android
           path: dist/libbox.aar
+          compression-level: 0
+          if-no-files-found: error
+
+  libbox-ios:
+    runs-on: macos-15
+    steps:
+      - name: Cache library
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: dist/Libbox.xcframework
+          key: libbox-ios-${{ env.SING_BOX_VERSION }}-${{ env.GO_VERSION }}-${{ env.GOMOBILE_VERSION }}-${{ env.LIBBOX_CACHE }}
+      - uses: actions/setup-go@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Build Libbox.xcframework
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          git clone --depth 1 --branch "v$SING_BOX_VERSION" https://github.com/SagerNet/sing-box.git "$RUNNER_TEMP/sing-box"
+          cd "$RUNNER_TEMP/sing-box"
+          go install -v "github.com/sagernet/gomobile/cmd/gomobile@$GOMOBILE_VERSION"
+          go install -v "github.com/sagernet/gomobile/cmd/gobind@$GOMOBILE_VERSION"
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          gomobile bind -v -target ios,iossimulator -libname=box -tags-not-macos=with_low_memory -iosversion=15.0 \
+            -trimpath -buildvcs=false -ldflags "$LIBBOX_LDFLAGS" -tags "$LIBBOX_TAGS,grpcnotrace" ./experimental/libbox
+          mkdir -p "$GITHUB_WORKSPACE/dist" && mv Libbox.xcframework "$GITHUB_WORKSPACE/dist/"
+          du -sh "$GITHUB_WORKSPACE/dist/Libbox.xcframework"
+      - name: Pack
+        run: cd dist && zip -qry Libbox.xcframework.zip Libbox.xcframework
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libbox-ios
+          path: dist/Libbox.xcframework.zip
           compression-level: 0
           if-no-files-found: error
 
