@@ -17,6 +17,9 @@ mkdir -p "$OUT"
 
 shot() { adb exec-out screencap -p > "$OUT/$1.png"; }
 
+# the VPN interface (the emulator always has tunl0, an unused IP-in-IP device: never match it)
+tun_up() { adb shell ip link 2> /dev/null | grep -qE "^[0-9]+: tun[0-9]+:"; }
+
 # taps the element whose label is exactly $1, found through uiautomator; works only while the screen is still
 tap_text() {
   timeout 30 adb shell uiautomator dump /sdcard/ui.xml > /dev/null 2>&1 || return 1
@@ -72,7 +75,7 @@ for i in $(seq 1 60); do
   [ -n "$SECRET" ] || SECRET=$(adb shell run-as "$PKG" cat files/settings.json 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin)["api"]["secret"])' 2>/dev/null || true)
   [ -n "$SECRET" ] || continue
   # up = the tunnel interface exists and the urltest group has measured a node
-  if adb shell ip link 2>/dev/null | grep -q tun && \
+  if tun_up && \
      curl -fsS -H "Authorization: Bearer $SECRET" http://127.0.0.1:12090/proxies/proxy 2>/dev/null | grep -q '"delay"'; then ok=1; break; fi
 done
 sleep 5
@@ -147,9 +150,9 @@ adb shell run-as "$PKG" cat files/xray.log > "$OUT/xray-client.log" || true
 size=$(adb shell wm size | tail -1 | sed 's/.*: //' | tr -d '\r'); w=${size%x*}
 dens=$(adb shell wm density | tail -1 | sed 's/.*: //' | tr -d '\r')
 adb shell input tap "$((w / 2))" "$(python3 -c "print(int(200 * $dens / 160))")"
-for i in $(seq 1 20); do adb shell ip link 2> /dev/null | grep -q tun || break; sleep 1; done
+for i in $(seq 1 20); do tun_up || break; sleep 1; done
 shot 6-vpn-off
-if adb shell ip link 2> /dev/null | grep -q tun; then
+if tun_up; then
   echo "the tunnel is still up after the button was tapped"
   adb shell ip link > "$OUT/ip-link-after-off.txt" || true
   adb shell dumpsys connectivity > "$OUT/connectivity.txt" 2> /dev/null || true
@@ -174,7 +177,7 @@ fi
 done_check=0
 for i in $(seq 1 40); do
   sleep 1
-  adb shell ip link 2> /dev/null | grep -q tun && { echo "a tunnel came up during the check"; exit 1; }
+  tun_up && { echo "a tunnel came up during the check"; exit 1; }
   if adb shell run-as "$PKG" cat files/last-check.json > "$OUT/last-check.json" 2> /dev/null && [ -s "$OUT/last-check.json" ]; then done_check=1; break; fi
 done
 sleep 2
