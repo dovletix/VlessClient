@@ -6,7 +6,7 @@
 # With a fifth argument (the access log of an Xray XHTTP server on port 10444) it also checks the XHTTP path
 # through the app's bundled Xray; with REALITY_PBK set (an Xray Reality + Vision server on port 10445, the
 # public key) the Reality path, which goes through the bundled Xray as well.
-# At the end it stops the app (the VPN goes down with it) and checks the servers with "Проверить" while the
+# At the end it switches the VPN off with the app's button and checks the servers with "Проверить" while the
 # tunnel is off.
 # usage: [REALITY_PBK=<key>] e2e_android.sh <apk> <server uuid> <server log> <out dir> [xray access log]
 set -euo pipefail
@@ -142,22 +142,29 @@ sleep 1
 adb shell run-as "$PKG" cat files/sing-box.log > "$OUT/sing-box.log" || true
 adb shell run-as "$PKG" cat files/xray.log > "$OUT/xray-client.log" || true
 
-# "Проверить" while the VPN is off: a sing-box with only the nodes (no TUN) measures them
-adb shell am force-stop "$PKG"
-for i in $(seq 1 10); do adb shell ip link 2> /dev/null | grep -q tun || break; sleep 1; done
-adb shell ip link 2> /dev/null | grep -q tun && { echo "the tunnel is still up after the app was stopped"; exit 1; }
+# "Проверить" while the VPN is off: a sing-box with only the nodes (no TUN) measures them.
+# Switch the VPN off with the big button (centred, about 165 dp below the status bar, 190 dp high)
+size=$(adb shell wm size | tail -1 | sed 's/.*: //' | tr -d '\r'); w=${size%x*}
+dens=$(adb shell wm density | tail -1 | sed 's/.*: //' | tr -d '\r')
+adb shell input tap "$((w / 2))" "$(python3 -c "print(int(200 * $dens / 160))")"
+for i in $(seq 1 20); do adb shell ip link 2> /dev/null | grep -q tun || break; sleep 1; done
+shot 6-vpn-off
+if adb shell ip link 2> /dev/null | grep -q tun; then
+  echo "the tunnel is still up after the button was tapped"
+  adb shell ip link > "$OUT/ip-link-after-off.txt" || true
+  adb shell dumpsys connectivity > "$OUT/connectivity.txt" 2> /dev/null || true
+  adb logcat -d > "$OUT/logcat.txt"
+  exit 1
+fi
 adb shell run-as "$PKG" rm -f files/probe.json files/last-check.json
-adb shell am start -W -n "$PKG/.MainActivity"
-sleep 5
+sleep 2
 tap_tab 3
 sleep 3
-shot 6-servers-off
+shot 6b-servers-off
 if tap_text "Проверить"; then
   echo "tapped the check button (uiautomator)"
 else
   # fallback: the button sits at the top right, below the status bar (24 or 48 dp)
-  size=$(adb shell wm size | tail -1 | sed 's/.*: //' | tr -d '\r'); w=${size%x*}
-  dens=$(adb shell wm density | tail -1 | sed 's/.*: //' | tr -d '\r')
   for top in 24 48 36; do
     adb shell input tap "$(python3 -c "print(int($w - 80 * $dens / 160))")" "$(python3 -c "print(int(($top + 32) * $dens / 160))")"
     sleep 2
