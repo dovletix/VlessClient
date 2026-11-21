@@ -1,0 +1,216 @@
+name: Mobile apps
+
+# Builds the phone apps (mobile/): the sing-box library (libbox) for Android and iOS, the Russian
+# geo rule-sets, the Android APKs and an unsigned iOS build. A tag like mobile-v1.0.0 publishes a
+# GitHub Release with the APKs (never marked "latest": the Windows updater reads releases/latest).
+
+on:
+  push:
+    branches: [main, mobile]
+    tags: ['mobile-v*']
+    paths: ['mobile/**', '.github/workflows/mobile.yml']
+  pull_request:
+    paths: ['mobile/**', '.github/workflows/mobile.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SING_BOX_VERSION: '1.14.4'
+  GO_VERSION: '1.26.10'
+  GOMOBILE_VERSION: 'v0.1.13'
+  FLUTTER_VERSION: '3.47.9'
+  # what the phone needs from sing-box: TUN (gvisor), QUIC, uTLS/Reality, Clash API
+  LIBBOX_TAGS: 'with_gvisor,with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0'
+  LIBBOX_LDFLAGS: '-X github.com/sagernet/sing-box/constant.Version=1.14.4 -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -s -w -buildid='
+  # the geo databases are the ones the Windows MSI ships (cores.ps1)
+  XRAY_ZIP_URL: 'https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-windows-64.zip'
+  XRAY_ZIP_SHA256: '1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d'
+  SING_BOX_LINUX_URL: 'https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-linux-amd64.tar.gz'
+  SING_BOX_LINUX_SHA256: '699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  geo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Xray databases and sing-box
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/dl" && cd "$RUNNER_TEMP/dl"
+          curl -fsSL -o xray.zip "$XRAY_ZIP_URL"
+          echo "$XRAY_ZIP_SHA256  xray.zip" | sha256sum -c -
+          unzip -q -o xray.zip geoip.dat geosite.dat
+          curl -fsSL -o sb.tar.gz "$SING_BOX_LINUX_URL"
+          echo "$SING_BOX_LINUX_SHA256  sb.tar.gz" | sha256sum -c -
+          tar -xzf sb.tar.gz --strip-components=1
+      - name: Build rule-sets
+        run: |
+          set -e
+          out="$RUNNER_TEMP/rules"
+          python3 -I mobile/tools/geo_rules.py "$RUNNER_TEMP/dl/geoip.dat" "$RUNNER_TEMP/dl/geosite.dat" "$out"
+          for n in geoip-ru geosite-ru geosite-ru-blocked; do
+            "$RUNNER_TEMP/dl/sing-box" rule-set compile --output "$out/$n.srs" "$out/$n.json"
+          done
+          mkdir -p dist && cp "$out"/*.srs dist/ && ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geo-rules
+          path: dist/*.srs
+          if-no-files-found: error
+
+  libbox-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cache library
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: dist/libbox.aar
+          key: libbox-android-${{ env.SING_BOX_VERSION }}-${{ env.GO_VERSION }}-${{ env.GOMOBILE_VERSION }}-${{ env.LIBBOX_TAGS }}-1
+      - uses: actions/setup-go@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/setup-java@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Setup Android NDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+      - name: Build libbox.aar
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          git clone --depth 1 --branch "v$SING_BOX_VERSION" https://github.com/SagerNet/sing-box.git "$RUNNER_TEMP/sing-box"
+          cd "$RUNNER_TEMP/sing-box"
+          go install -v "github.com/sagernet/gomobile/cmd/gomobile@$GOMOBILE_VERSION"
+          go install -v "github.com/sagernet/gomobile/cmd/gobind@$GOMOBILE_VERSION"
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          gomobile bind -v -o libbox.aar -target android/arm64,android/arm,android/amd64 -androidapi 24 \
+            -javapkg=io.nekohasekai -libname=box -trimpath -buildvcs=false \
+            -ldflags "$LIBBOX_LDFLAGS" -tags "$LIBBOX_TAGS" ./experimental/libbox
+          mkdir -p "$GITHUB_WORKSPACE/dist" && mv libbox.aar "$GITHUB_WORKSPACE/dist/"
+          ls -l "$GITHUB_WORKSPACE/dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libbox-android
+          path: dist/libbox.aar
+          compression-level: 0
+          if-no-files-found: error
+
+  android:
+    needs: [test, geo, libbox-android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: libbox-android
+          path: mobile/android/app/libs
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo-rules
+          path: mobile/assets/rules
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/mobile-v* ]]; then v="${GITHUB_REF_NAME#mobile-v}"; else v="1.0.0"; fi
+          [[ "$v" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,5}$ ]] || { echo "Bad version: $v"; exit 1; }
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "No release key in the repository secrets: the APK is signed with a throw-away debug key."
+            if [[ "$GITHUB_REF" == refs/tags/mobile-v* ]]; then echo "A release needs the real key."; exit 1; fi
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          {
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+      - name: Build APKs
+        working-directory: mobile
+        run: |
+          set -e
+          v="${{ steps.version.outputs.value }}"
+          flutter pub get
+          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64 \
+            --build-name "$v" --build-number "$GITHUB_RUN_NUMBER"
+          mkdir -p ../dist
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "build/app/outputs/flutter-apk/app-$abi-release.apk" "../dist/VlessClient-$v-$abi.apk"
+          done
+          flutter build apk --release --target-platform android-arm,android-arm64,android-x64 \
+            --build-name "$v" --build-number "$GITHUB_RUN_NUMBER"
+          cp build/app/outputs/flutter-apk/app-release.apk "../dist/VlessClient-$v-universal.apk"
+          ls -l ../dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VlessClient-android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/mobile-v')
+    needs: [android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VlessClient-android
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#mobile-v}"
+          gh release create "$GITHUB_REF_NAME" dist/*.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --latest=false \
+            --title "VlessClient для телефона $v" \
+            --notes "Android: скачайте VlessClient-$v-arm64-v8a.apk (подходит почти всем телефонам) или VlessClient-$v-universal.apk, если не уверены. Откройте файл на телефоне и разрешите установку. Уже установленное приложение обновится по кнопке «Проверить обновления» в настройках."

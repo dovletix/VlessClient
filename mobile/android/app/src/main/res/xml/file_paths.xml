@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The downloaded update (files/update.apk) is handed to the system installer through FileProvider. -->
+<paths>
+    <files-path name="files" path="." />
+</paths>
