@@ -7,7 +7,16 @@ namespace VlessClient.Core
     public static class Paths
     {
         public const string ServiceName = "VlessClient";
-        public const string PipeName = "VlessClient.Control.v2";
+        /// <summary>The control pipe. VLESSCLIENT_PIPE overrides it for development, so that a --console engine and a window
+        /// started with the same variable never meet the installed service (or its tray window).</summary>
+        public static string PipeName
+        {
+            get
+            {
+                var env = Environment.GetEnvironmentVariable("VLESSCLIENT_PIPE");
+                return string.IsNullOrWhiteSpace(env) ? "VlessClient.Control.v2" : env.Trim();
+            }
+        }
         public const string GitHubRepo = "dovletix/VlessClient";
 
         /// <summary>Folder of VlessClient.exe (Program Files\VlessClient when installed).</summary>

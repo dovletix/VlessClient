@@ -90,6 +90,12 @@ namespace VlessClient.Service
                 case "disconnect": await Task.Run(() => engine.Disconnect()).ConfigureAwait(false); return Ok();
                 case "set_subscription": return Result(await engine.SetSubscriptionAsync(r.Str("url"), r.Bool("insecure")).ConfigureAwait(false));
                 case "refresh_subscription": return Result(await engine.RefreshSubscriptionAsync().ConfigureAwait(false));
+                case "add_backup":
+                    {
+                        var (err, msg) = await engine.AddBackupAsync(r.Str("url")).ConfigureAwait(false);
+                        return err != null ? Result(err) : Ok().Set("message", msg);
+                    }
+                case "remove_backup": return Result(engine.RemoveBackup(r.Str("url")));
                 case "set_node":
                     {
                         var node = r.Str("node", "auto");

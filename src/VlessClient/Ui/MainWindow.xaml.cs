@@ -408,7 +408,8 @@ namespace VlessClient.Ui
                 var sub = settings.Obj("subscription");
                 string host = ""; try { host = new Uri(sub.Str("url")).Host; } catch { }
                 var subTime = status?.Str("subscription_time") ?? "";
-                var count = status?.Objects("nodes").Count ?? 0;
+                var count = status?.Objects("nodes").Count(n => n.Int("group") == 0) ?? 0;
+                RenderBackups();
                 SubInfo.Text = sub.Bool("inline")
                     ? "Серверы вставлены вручную: " + count + "\nЧтобы обновить их, нажмите «Изменить ссылку»."
                     : "Сервер подписки: " + host + "\nСерверов в подписке: " + count +
@@ -451,7 +452,8 @@ namespace VlessClient.Ui
             try
             {
                 var items = new List<KeyValuePair<string, string>> { new KeyValuePair<string, string>("auto", "Автоматически (рекомендуется)") };
-                items.AddRange(nodes.Select(n => new KeyValuePair<string, string>(n.Int("index").ToString(), n.Int("index") + ". " + n.Str("name"))));
+                items.AddRange(nodes.Select(n => new KeyValuePair<string, string>(n.Int("index").ToString(),
+                    n.Int("index") + ". " + n.Str("name") + (n.Int("group") > 0 ? "  (запасная подписка " + n.Int("group") + ")" : ""))));
                 NodeBox.ItemsSource = items;
                 NodeBox.DisplayMemberPath = "Value";
                 NodeBox.SelectedValuePath = "Key";
@@ -479,6 +481,63 @@ namespace VlessClient.Ui
                 if (r.Bool("ok")) MessageBox.Show(this, "Список серверов обновлён.", "VlessClient", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             finally { SetBusy(null); }
+        }
+
+        private sealed class BackupVm
+        {
+            public string Url { get; set; }
+            public string Title { get; set; }
+            public string Info { get; set; }
+            public string Error { get; set; }
+            public Visibility ErrorVisibility => string.IsNullOrEmpty(Error) ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private void RenderBackups()
+        {
+            var list = status?.Objects("backups") ?? new List<Dictionary<string, object>>();
+            BackupList.ItemsSource = list.Select((b, k) =>
+            {
+                var time = b.Str("time");
+                var count = b.Int("count");
+                return new BackupVm
+                {
+                    Url = b.Str("url"),
+                    Title = (k + 1) + ". " + b.Str("host"),
+                    Info = time.Length == 0 || !DateTime.TryParse(time, out var t)
+                        ? "ещё не загружалась"
+                        : (count == 0 ? "копия основной, новых серверов нет" : "серверов: " + count) + " · обновлена " + t.ToString("dd.MM.yyyy HH:mm"),
+                    Error = b.Str("error").Length > 0 ? "Не загрузилась: " + b.Str("error") : "",
+                };
+            }).ToList();
+        }
+
+        private async void BackupAddClick(object sender, RoutedEventArgs e)
+        {
+            var url = BackupInput.Text.Trim();
+            if (url.Length == 0) return;
+            SetBusy("Проверяю ссылку…");
+            try
+            {
+                var r = await Send(new JObj().Set("cmd", "add_backup").Set("url", url), 60000);
+                if (r.Bool("ok"))
+                {
+                    BackupInput.Text = "";
+                    MessageBox.Show(this, r.Str("message"), "VlessClient", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                await PollStatus();
+                await LoadSettings();
+            }
+            finally { SetBusy(null); }
+        }
+
+        private async void BackupRemoveClick(object sender, RoutedEventArgs e)
+        {
+            if (!(((Button)sender).Tag is string url)) return;
+            string host = url; try { host = new Uri(url).Host; } catch { }
+            if (MessageBox.Show(this, "Убрать запасную подписку " + host + "?", "VlessClient", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            await Send(new JObj().Set("cmd", "remove_backup").Set("url", url));
+            await PollStatus();
+            await LoadSettings();
         }
 
         private void ChangeSubClick(object sender, RoutedEventArgs e)
@@ -708,7 +767,7 @@ namespace VlessClient.Ui
         private void PlaceholderChanged(object sender, TextChangedEventArgs e)
         {
             var box = (TextBox)sender;
-            var hint = box == AddExeInput ? AddExeHint : box == DirectInput ? DirectHint : box == ProxyInput ? ProxyHint : null;
+            var hint = box == AddExeInput ? AddExeHint : box == DirectInput ? DirectHint : box == ProxyInput ? ProxyHint : box == BackupInput ? BackupHint : null;
             if (hint != null) hint.Visibility = box.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
 

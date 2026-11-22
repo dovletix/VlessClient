@@ -46,7 +46,7 @@ namespace VlessClient.Service
         {
             settings = Settings.Load();
             try { settings.Save(); } catch (Exception e) { Log.Write("settings: cannot save: " + e.Message); }
-            nodes = Subscription.LoadCached();
+            nodes = Subscription.LoadCached(settings);
             KillOrphans();
             try { job = new JobObject(); } catch (Exception e) { Log.Write("job object: " + e.Message); }
             Log.Write($"engine: started, version {Updater.CurrentVersion}, elevated={IsElevated}, enabled={settings.Enabled}");
@@ -86,7 +86,12 @@ namespace VlessClient.Service
                     .Set("warnings", warnings.ToList())
                     .Set("version", Updater.CurrentVersion.ToString(3))
                     .Set("update", Updater.StatusJson())
-                    .Set("nodes", nodes.Select(n => (object)new JObj().Set("index", n.Index).Set("name", n.Name).Set("kind", n.Kind)).ToList())
+                    .Set("nodes", nodes.Select(n => (object)new JObj().Set("index", n.Index).Set("name", n.Name).Set("kind", n.Kind).Set("group", n.Group)).ToList())
+                    .Set("backups", settings.Backups.Select((b, k) => (object)new JObj()
+                        .Set("url", b.Url).Set("host", b.Host)
+                        .Set("count", nodes.Count(n => n.Group == k + 1))
+                        .Set("time", Subscription.BackupTime(b) == DateTime.MinValue ? "" : Subscription.BackupTime(b).ToString("s"))
+                        .Set("error", backupErrors.TryGetValue(b.Url, out var be) ? be : "")).ToList())
                     .Set("subscription_time", Subscription.CacheTime == DateTime.MinValue ? "" : Subscription.CacheTime.ToString("s"));
                 return st;
             }
@@ -145,7 +150,7 @@ namespace VlessClient.Service
                 {
                     settings.SubscriptionUrl = ""; settings.InlineNodes = true; settings.LastGoodNode = ""; settings.Enabled = true;
                     SaveSettings();
-                    nodes = Subscription.LoadCached();
+                    nodes = Subscription.LoadCached(settings);
                 }
                 Log.Write($"subscription: {nodes.Count} servers pasted directly");
                 BeginConnect();
@@ -177,7 +182,7 @@ namespace VlessClient.Service
                 settings.SubscriptionUrl = url; settings.InlineNodes = false; settings.InsecureTls = insecure; settings.LastGoodNode = "";
                 settings.Enabled = true;
                 SaveSettings();
-                nodes = Subscription.LoadCached();
+                nodes = Subscription.LoadCached(settings);
             }
             Log.Write($"subscription: set, {nodes.Count} nodes, insecure_tls={insecure}");
             BeginConnect();
@@ -186,19 +191,127 @@ namespace VlessClient.Service
 
         public async Task<string> RefreshSubscriptionAsync()
         {
-            if (!settings.HasSubscription) return "Подписка не задана";
-            if (!settings.CanDownload) return "Серверы были вставлены вручную, скачивать нечего. Чтобы обновить их, нажмите «Изменить ссылку» и вставьте новые.";
+            var s = SettingsCopy();
+            if (!s.HasSubscription) return "Подписка не задана";
+            if (!s.CanDownload && s.Backups.Count == 0)
+                return "Серверы были вставлены вручную, скачивать нечего. Чтобы обновить их, нажмите «Изменить ссылку» и вставьте новые.";
+            string old; lock (gate) old = NodesSignature(nodes);
+            var err = await DownloadAllAsync(s).ConfigureAwait(false);
+            string now; lock (gate) now = NodesSignature(nodes);
+            if (old != now && s.Enabled) { Log.Write("subscription: changed, reconnecting"); BeginConnect(); }
+            List<string> failed; lock (gate) failed = s.Backups.Where(b => backupErrors.ContainsKey(b.Url)).Select(b => b.Host).ToList();
+            if (err != null)
+                return s.Backups.Count == 0
+                    ? "Не удалось обновить подписку: " + err
+                    : "Основная подписка не загрузилась (" + err + "), остались прежние серверы. Запасные: " +
+                      (failed.Count == 0 ? "обновлены." : "не загрузились " + string.Join(", ", failed) + ".");
+            if (failed.Count > 0) return "Основная подписка обновлена, запасные не загрузились: " + string.Join(", ", failed) + ".";
+            return null;
+        }
+
+        private static string NodesSignature(List<Node> list) =>
+            string.Join("\n", list.Select(n => n.Group + "|" + n.Index + "|" + n.Address + "|" + n.Port + "|" + n.Id + "|" + n.Name + "|" +
+                                               string.Join("&", n.Query.OrderBy(kv => kv.Key).Select(kv => kv.Key + "=" + kv.Value))));
+
+        /// <summary>Why a backup subscription did not download last time (by link); absent when it did.</summary>
+        private readonly Dictionary<string, string> backupErrors = new Dictionary<string, string>();
+
+        private async Task<bool> DownloadBackupAsync(BackupSub b)
+        {
             try
             {
-                var body = await Subscription.FetchAsync(settings).ConfigureAwait(false);
-                if (body == null) return "По ссылке нет серверов VLESS.";
-                var old = File.Exists(Paths.SubscriptionCache) ? File.ReadAllText(Paths.SubscriptionCache, Paths.Utf8) : "";
-                File.WriteAllText(Paths.SubscriptionCache, body, Paths.Utf8);
-                lock (gate) nodes = Subscription.LoadCached();
-                if (old != body && settings.Enabled) { Log.Write("subscription: changed, reconnecting"); BeginConnect(); }
-                return null;
+                var body = await Subscription.FetchAsync(b.Url, b.Insecure).ConfigureAwait(false);
+                if (body == null) { lock (gate) backupErrors[b.Url] = "по ссылке нет серверов VLESS"; return false; }
+                File.WriteAllText(Subscription.BackupCache(b), body, Paths.Utf8);
+                lock (gate) backupErrors.Remove(b.Url);
+                return true;
             }
-            catch (Exception e) { return "Не удалось обновить подписку: " + Flatten(e); }
+            catch (Exception e)
+            {
+                lock (gate) backupErrors[b.Url] = Flatten(e);
+                Log.Write("subscription: backup " + b.Host + " failed: " + Flatten(e));
+                return false;
+            }
+        }
+
+        /// <summary>Downloads the main subscription (when it is a link) and every backup; whatever fails keeps its cached copy.
+        /// Returns the main subscription's error, null when it downloaded or is not a link.</summary>
+        private async Task<string> DownloadAllAsync(Settings s)
+        {
+            string mainError = null;
+            if (s.CanDownload)
+            {
+                try
+                {
+                    var body = await Subscription.FetchAsync(s).ConfigureAwait(false);
+                    if (body == null) mainError = "по ссылке нет серверов VLESS";
+                    else File.WriteAllText(Paths.SubscriptionCache, body, Paths.Utf8);
+                }
+                catch (Exception e) { mainError = Flatten(e); Log.Write("subscription: fetch failed: " + mainError); }
+            }
+            await Task.WhenAll(s.Backups.Select(DownloadBackupAsync)).ConfigureAwait(false);
+            lock (gate) nodes = Subscription.LoadCached(settings);
+            return mainError;
+        }
+
+        /// <summary>Adds a backup subscription link. It is saved even when it does not download right now: a backup is often
+        /// meant for a network where the main one is blocked. Returns null and a message, or an error (nothing saved).</summary>
+        public async Task<(string error, string message)> AddBackupAsync(string url)
+        {
+            url = (url ?? "").Trim();
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || (u.Scheme != "https" && u.Scheme != "http"))
+                return ("Это не похоже на ссылку подписки. Она должна начинаться с https://", null);
+            lock (gate)
+                if (url == settings.SubscriptionUrl.Trim() || settings.Backups.Any(b => b.Url == url)) return ("Эта ссылка уже добавлена.", null);
+            var backup = new BackupSub { Url = url };
+            string body = null, err = null;
+            try { body = await Subscription.FetchAsync(url, false).ConfigureAwait(false); }
+            catch (Exception e)
+            {
+                err = Flatten(e);
+                if (err.IndexOf("SSL", StringComparison.OrdinalIgnoreCase) >= 0 || err.IndexOf("trust", StringComparison.OrdinalIgnoreCase) >= 0
+                    || err.IndexOf("certificate", StringComparison.OrdinalIgnoreCase) >= 0 || err.IndexOf("сертификат", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    // self-hosted panels often use a self-signed certificate: accept it for this link, as for the main one
+                    try { body = await Subscription.FetchAsync(url, true).ConfigureAwait(false); backup.Insecure = true; err = null; }
+                    catch (Exception e2) { err = Flatten(e2); }
+                }
+            }
+            int added;
+            lock (gate)
+            {
+                settings.Backups.Add(backup);
+                SaveSettings();
+                if (body != null) { File.WriteAllText(Subscription.BackupCache(backup), body, Paths.Utf8); backupErrors.Remove(url); }
+                else backupErrors[url] = err ?? "по ссылке нет серверов VLESS";
+                nodes = Subscription.LoadCached(settings);
+                added = nodes.Count(n => n.Group == settings.Backups.Count);
+            }
+            Log.Write($"subscription: backup {backup.Host} added, {added} new servers, insecure_tls={backup.Insecure}, error={err}");
+            if (body == null) return (null, "Сохранил, но сейчас она не загружается (" + (err ?? "по ссылке нет серверов VLESS") + "). Попробую при следующем обновлении.");
+            return (null, added == 0
+                ? "Сохранил. Это копия основной подписки: новых серверов в ней нет, но она выручит, если основная ссылка перестанет загружаться."
+                : "Сохранил. Запасных серверов: " + added + ".");
+        }
+
+        public string RemoveBackup(string url)
+        {
+            bool onBackup, enabled;
+            lock (gate)
+            {
+                var b = settings.Backups.FirstOrDefault(x => x.Url == url);
+                if (b == null) return "Такой запасной подписки нет.";
+                // later backups get new numbers, so a tunnel that runs on a backup server is rebuilt
+                onBackup = (mainNode?.Group ?? 0) > 0;
+                settings.Backups.Remove(b);
+                SaveSettings();
+                try { File.Delete(Subscription.BackupCache(b)); } catch { }
+                backupErrors.Remove(url);
+                nodes = Subscription.LoadCached(settings);
+                enabled = settings.Enabled;
+            }
+            if (onBackup && enabled) BeginConnect();
+            return null;
         }
 
         /// <summary>Applies a settings change from the UI. Rules are hot-reloaded; structural changes reconnect.</summary>
@@ -251,20 +364,16 @@ namespace VlessClient.Service
                 if (!s.HasSubscription) { SetState(State.NoSubscription, "Нужна ссылка на подписку"); return; }
 
                 SetState(State.Connecting, "Загружаю список серверов…");
-                if (s.CanDownload && (nodes.Count == 0 || (DateTime.Now - Subscription.CacheTime).TotalHours > s.UpdateHours))
-                {
-                    try
-                    {
-                        var body = await Subscription.FetchAsync(s).ConfigureAwait(false);
-                        if (body != null) { File.WriteAllText(Paths.SubscriptionCache, body, Paths.Utf8); lock (gate) nodes = Subscription.LoadCached(); }
-                    }
-                    catch (Exception e) { Log.Write("subscription: fetch failed: " + Flatten(e)); }
-                }
+                bool empty; lock (gate) empty = nodes.Count == 0;
+                // a backup that was never downloaded (or long ago) counts too: it is what saves the day when the main servers die
+                if (empty || (DateTime.Now - Subscription.CacheTime).TotalHours > s.UpdateHours
+                          || s.Backups.Any(b => (DateTime.Now - Subscription.BackupTime(b)).TotalHours > s.UpdateHours))
+                    await DownloadAllAsync(s).ConfigureAwait(false);
                 List<Node> all; lock (gate) all = nodes.ToList();
                 if (all.Count == 0)
                 {
                     Fail("Не удалось загрузить список серверов: сервер подписки не отвечает. Возможно, ваш интернет-провайдер его не пропускает. " +
-                         "Попросите того, кто выдал подписку, прислать сами серверы (строки vless://) и вставьте их через «Настройки → Изменить ссылку».");
+                         "Добавьте запасную подписку в «Настройках» или попросите того, кто выдал подписку, прислать сами серверы (строки vless://) и вставьте их через «Настройки → Изменить ссылку».");
                     return;
                 }
                 if (ct.IsCancellationRequested) return;
@@ -273,25 +382,36 @@ namespace VlessClient.Service
                 SingBoxConfig.WriteUserRuleSets(s);
                 lock (gate) warnings = NetInfo.ForeignTunnels(s).Select(t => "Включён другой VPN («" + t + "»). Выключите его, иначе интернет может не работать.").ToList();
 
-                // candidates in order of preference
-                var pool = Subscription.AutoPool(s, all);
+                // candidates in order of preference; "auto" takes one subscription at a time: the main one, then each backup
+                // in turn when none of the earlier ones answers
                 var pinned = Subscription.FindPinned(s, all);
-                List<Node> order;
+                List<Node> order = null;
                 if (pinned != null)
-                    order = new[] { pinned }.Concat(pool.Where(n => n.Index != pinned.Index)).ToList();
+                    order = new[] { pinned }.Concat(Subscription.AutoPool(s, all.Where(n => n.Group == pinned.Group).ToList()).Where(n => n.Index != pinned.Index)).ToList();
                 else
                 {
-                    SetState(State.Connecting, "Ищу самый быстрый сервер…");
-                    var probe = await Prober.ProbeAsync(pool).ConfigureAwait(false);
-                    lock (gate) lastProbe = probe;
-                    if (ct.IsCancellationRequested) return;
-                    var ok = probe.Where(r => r.Ok).ToList();
-                    if (ok.Count == 0) { Fail("Ни один сервер не отвечает. Возможно, нет интернета или провайдер их блокирует."); return; }
-                    // keep the node that worked last time unless another one is much faster: fewer surprises for the user
-                    var last = ok.FirstOrDefault(r => r.Node.Name == s.LastGoodNode);
-                    if (last != null && last.Ms <= ok[0].Ms * 1.5 + 100) ok = new[] { last }.Concat(ok.Where(r => r != last)).ToList();
-                    order = ok.Select(r => r.Node).ToList();
-                    Log.Write("probe: " + string.Join(", ", probe.Select(r => $"{r.Node.Index}={(r.Ok ? r.Ms + "ms" : "fail")}")));
+                    var probed = new List<ProbeResult>();
+                    foreach (var g in Subscription.Groups(all))
+                    {
+                        var pool = Subscription.AutoPool(s, all.Where(n => n.Group == g).ToList());
+                        if (pool.Count == 0) continue;
+                        SetState(State.Connecting, g == 0 || g > s.Backups.Count
+                            ? "Ищу самый быстрый сервер…"
+                            : "Серверы не отвечают, пробую запасную подписку " + s.Backups[g - 1].Host + "…");
+                        var probe = await Prober.ProbeAsync(pool).ConfigureAwait(false);
+                        probed.AddRange(probe);
+                        lock (gate) lastProbe = probed.ToList();
+                        if (ct.IsCancellationRequested) return;
+                        Log.Write($"probe (subscription {g}): " + string.Join(", ", probe.Select(r => $"{r.Node.Index}={(r.Ok ? r.Ms + "ms" : "fail")}")));
+                        var ok = probe.Where(r => r.Ok).ToList();
+                        if (ok.Count == 0) continue;
+                        // keep the node that worked last time unless another one is much faster: fewer surprises for the user
+                        var last = ok.FirstOrDefault(r => r.Node.Name == s.LastGoodNode);
+                        if (last != null && last.Ms <= ok[0].Ms * 1.5 + 100) ok = new[] { last }.Concat(ok.Where(r => r != last)).ToList();
+                        order = ok.Select(r => r.Node).ToList();
+                        break;
+                    }
+                    if (order == null) { Fail("Ни один сервер не отвечает. Возможно, нет интернета или провайдер их блокирует."); return; }
                 }
 
                 var tun = IsElevated;   // only a development run (--console) is not elevated
@@ -501,12 +621,19 @@ namespace VlessClient.Service
                 foreach (var w in warnings) sb.AppendLine("warning: " + w);
             }
             string host = ""; try { host = new Uri(s.SubscriptionUrl).Host; } catch { }
-            sb.AppendLine($"subscription host: {host}  insecure_tls: {s.InsecureTls}  cached: {Subscription.CacheTime:s}  nodes: {nodes.Count}");
+            List<Node> list; lock (gate) list = nodes.ToList();
+            sb.AppendLine($"subscription host: {host}  insecure_tls: {s.InsecureTls}  cached: {Subscription.CacheTime:s}  nodes: {list.Count(n => n.Group == 0)}");
+            for (var k = 0; k < s.Backups.Count; k++)
+            {
+                var b = s.Backups[k];
+                string be; lock (gate) backupErrors.TryGetValue(b.Url, out be);
+                sb.AppendLine($"backup {k + 1}: {b.Host}  cached: {Subscription.BackupTime(b):s}  new nodes: {list.Count(n => n.Group == k + 1)}" + (be != null ? "  error: " + be : ""));
+            }
             sb.AppendLine($"default: {s.Default}  node setting: {s.Node}  auto_exclude: {s.AutoExclude}  ru_direct: {s.RuDirect}");
             sb.AppendLine("apps: " + string.Join("; ", s.Apps.Select(a => a.Name + (a.Vpn ? "=vpn" : "=direct"))));
             sb.AppendLine();
             sb.AppendLine("nodes:");
-            foreach (var n in nodes) sb.AppendLine($"  {n.Index,2} {n.Name}  {n.Kind}");
+            foreach (var n in list) sb.AppendLine($"  {n.Index,2}{(n.Group > 0 ? " [b" + n.Group + "]" : "")} {n.Name}  {n.Kind}");
             if (lastProbe != null)
             {
                 sb.AppendLine("last probe:");

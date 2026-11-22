@@ -524,6 +524,29 @@
                 <Button Content="Обновить список серверов" Style="{StaticResource Btn}" Margin="0,0,8,6" Click="RefreshSubClick" />
                 <Button Content="Изменить ссылку" Style="{StaticResource Btn}" Margin="0,0,8,6" Click="ChangeSubClick" />
               </WrapPanel>
+              <TextBlock Text="Запасные подписки" FontWeight="SemiBold" Margin="0,14,0,4" />
+              <TextBlock Style="{StaticResource Hint}" Text="Если основная подписка не загружается или ни один её сервер не отвечает, клиент возьмёт серверы из запасной. Подойдёт та же подписка по другому адресу (например, через другой сервер) или подписка другого сервиса." />
+              <ItemsControl x:Name="BackupList" Margin="0,8,0,0">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <DockPanel Margin="0,0,0,8">
+                      <Button DockPanel.Dock="Right" Content="Убрать" Style="{StaticResource Btn}" Margin="8,0,0,0" VerticalAlignment="Center" Tag="{Binding Url}" Click="BackupRemoveClick" />
+                      <StackPanel>
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding Info}" Style="{StaticResource Hint}" />
+                        <TextBlock Text="{Binding Error}" Style="{StaticResource Hint}" Foreground="{DynamicResource Bad}" Visibility="{Binding ErrorVisibility}" />
+                      </StackPanel>
+                    </DockPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <DockPanel Margin="0,2,0,0">
+                <Button DockPanel.Dock="Right" Content="Добавить" Style="{StaticResource Btn}" Margin="8,0,0,0" Click="BackupAddClick" />
+                <Grid>
+                  <TextBox x:Name="BackupInput" TextChanged="PlaceholderChanged" AutomationProperties.Name="Ссылка на запасную подписку" />
+                  <TextBlock x:Name="BackupHint" Text="https://… ссылка на запасную подписку" Foreground="{DynamicResource Muted}" Margin="11,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False" />
+                </Grid>
+              </DockPanel>
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}">

@@ -13,6 +13,8 @@ namespace VlessClient.Core
     /// <summary>One server from the subscription (a vless:// link).</summary>
     public sealed class Node
     {
+        /// <summary>0 = the main subscription, 1.. = backup subscription number (used when none of the main servers works).</summary>
+        public int Group;
         public int Index;
         public string Name = "";
         public string Id = "";
@@ -59,18 +61,33 @@ namespace VlessClient.Core
 
     public static class Subscription
     {
-        /// <summary>Downloads the subscription; returns null on failure (the cached copy stays).</summary>
-        public static async Task<string> FetchAsync(Settings s)
+        /// <summary>Downloads the main subscription; throws on network errors, returns null when the answer has no vless:// lines.</summary>
+        public static Task<string> FetchAsync(Settings s) => FetchAsync(s.SubscriptionUrl, s.InsecureTls);
+
+        public static async Task<string> FetchAsync(string url, bool insecure)
         {
             var handler = new HttpClientHandler { UseProxy = false, AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate };
-            if (s.InsecureTls) handler.ServerCertificateCustomValidationCallback = (m, c, ch, e) => true;
+            if (insecure) handler.ServerCertificateCustomValidationCallback = (m, c, ch, e) => true;
             using (var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(25) })
             {
                 http.DefaultRequestHeaders.UserAgent.ParseAdd("VlessClient/" + typeof(Subscription).Assembly.GetName().Version.ToString(3));
-                var body = await http.GetStringAsync(s.SubscriptionUrl.Trim()).ConfigureAwait(false);
+                var body = await http.GetStringAsync(url.Trim()).ConfigureAwait(false);
                 return Decode(body);
             }
         }
+
+        /// <summary>The cached copy of a backup subscription, named after its link (removing one keeps the others' files).</summary>
+        public static string BackupCache(BackupSub b)
+        {
+            uint h = 0x811c9dc5;
+            foreach (var c in Encoding.UTF8.GetBytes(b.Url)) { h ^= c; h *= 0x01000193; }
+            return Path.Combine(Paths.RuntimeDir, "backup-" + h.ToString("x8") + ".txt");
+        }
+
+        public static DateTime BackupTime(BackupSub b) { var f = BackupCache(b); return File.Exists(f) ? File.GetLastWriteTime(f) : DateTime.MinValue; }
+
+        /// <summary>Subscription groups that have at least one node, in order (main first).</summary>
+        public static List<int> Groups(List<Node> all) => all.Select(n => n.Group).Distinct().OrderBy(g => g).ToList();
 
         /// <summary>Accepts a plain list of links or a base64 blob; returns only vless:// lines.</summary>
         public static string Decode(string body)
@@ -90,20 +107,35 @@ namespace VlessClient.Core
             return lines.Count == 0 ? null : string.Join("\n", lines);
         }
 
-        public static List<Node> LoadCached()
+        /// <summary>The main subscription's nodes first (group 0), then each backup's (group 1..), numbered on. A link that is
+        /// already in the list is skipped, so a backup that mirrors the main subscription adds nothing (it still helps when
+        /// the main link cannot be downloaded).</summary>
+        public static List<Node> LoadCached(Settings s)
         {
             var res = new List<Node>();
-            if (!File.Exists(Paths.SubscriptionCache)) return res;
-            var i = 0;
-            foreach (var line in File.ReadAllLines(Paths.SubscriptionCache, Paths.Utf8))
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            Add(res, seen, Paths.SubscriptionCache, 0);
+            for (var k = 0; k < s.Backups.Count; k++) Add(res, seen, BackupCache(s.Backups[k]), k + 1);
+            return res;
+        }
+
+        private static void Add(List<Node> res, HashSet<string> seen, string file, int group)
+        {
+            if (!File.Exists(file)) return;
+            foreach (var line in File.ReadAllLines(file, Paths.Utf8))
             {
+                // the same server = the same user id, address and port; the query may differ between two downloads
+                // (3x-ui picks a random short id from the inbound's list for every answer)
+                var key = line.Trim().Split('#')[0].Split('?')[0].ToLowerInvariant();
+                if (seen.Contains(key)) continue;
                 var n = Node.Parse(line);
                 if (n == null) continue;
-                n.Index = ++i;
+                seen.Add(key);
+                n.Group = group;
+                n.Index = res.Count + 1;
                 if (n.Name.Length == 0) n.Name = "Сервер " + n.Index;
                 res.Add(n);
             }
-            return res;
         }
 
         public static DateTime CacheTime => File.Exists(Paths.SubscriptionCache) ? File.GetLastWriteTime(Paths.SubscriptionCache) : DateTime.MinValue;

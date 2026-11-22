@@ -12,6 +12,19 @@ namespace VlessClient.Core
         public bool Vpn;
     }
 
+    /// <summary>A backup subscription link: a mirror of the main one (the same panel through another address) or another
+    /// provider. Its servers are used when the main subscription cannot be downloaded or none of its servers answers.</summary>
+    public sealed class BackupSub
+    {
+        public string Url = "";
+        public bool Insecure;                // self-signed certificate, accepted when the link was added
+
+        public string Host
+        {
+            get { try { return new Uri(Url).Host; } catch { return Url; } }
+        }
+    }
+
     /// <summary>All user settings. Stored as JSON in C:\ProgramData\VlessClient\settings.json; only the service writes it.</summary>
     public sealed class Settings
     {
@@ -20,6 +33,7 @@ namespace VlessClient.Core
         public bool InlineNodes;             // servers were pasted as vless:// lines instead of a link (nothing to download)
         public bool InsecureTls;
         public int UpdateHours = 12;
+        public List<BackupSub> Backups = new List<BackupSub>();
 
         // connection
         public bool Enabled;                 // the user wants the VPN on (survives reboots)
@@ -110,7 +124,8 @@ namespace VlessClient.Core
         public JObj ToJson()
         {
             return new JObj()
-                .Set("subscription", new JObj().Set("url", SubscriptionUrl).Set("inline", InlineNodes).Set("insecure_tls", InsecureTls).Set("update_hours", UpdateHours))
+                .Set("subscription", new JObj().Set("url", SubscriptionUrl).Set("inline", InlineNodes).Set("insecure_tls", InsecureTls).Set("update_hours", UpdateHours)
+                    .Set("backups", Backups.Select(b => (object)new JObj().Set("url", b.Url).Set("insecure", b.Insecure)).ToList()))
                 .Set("enabled", Enabled)
                 .Set("node", Node)
                 .Set("auto_exclude", AutoExclude)
@@ -135,7 +150,12 @@ namespace VlessClient.Core
         {
             var s = new Settings();
             var sub = j.Obj("subscription");
-            if (sub != null) { s.SubscriptionUrl = sub.Str("url"); s.InlineNodes = sub.Bool("inline"); s.InsecureTls = sub.Bool("insecure_tls"); s.UpdateHours = Math.Max(1, sub.Int("update_hours", 12)); }
+            if (sub != null)
+            {
+                s.SubscriptionUrl = sub.Str("url"); s.InlineNodes = sub.Bool("inline"); s.InsecureTls = sub.Bool("insecure_tls"); s.UpdateHours = Math.Max(1, sub.Int("update_hours", 12));
+                s.Backups = sub.Objects("backups").Select(b => new BackupSub { Url = b.Str("url").Trim(), Insecure = b.Bool("insecure") })
+                    .Where(b => b.Url.Length > 0).ToList();
+            }
             s.Enabled = j.Bool("enabled");
             s.Node = j.Str("node", "auto");
             s.AutoExclude = j.Str("auto_exclude");
