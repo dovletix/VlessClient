@@ -38,8 +38,8 @@ class SettingsPage extends StatelessWidget {
                 Hint(!s.hasSubscription
                     ? 'Подписка не задана.'
                     : s.inlineNodes
-                        ? 'Серверы вставлены вручную: ${app.nodes.length}.'
-                        : 'Сервер подписки: $subHost. Серверов: ${app.nodes.length}.'),
+                        ? 'Серверы вставлены вручную: ${app.nodes.where((n) => n.group == 0).length}.'
+                        : 'Сервер подписки: $subHost. Серверов: ${app.nodes.where((n) => n.group == 0).length}.'),
                 const SizedBox(height: 2),
                 if (s.hasSubscription) Hint('Список обновлён: ${_date(app.subscriptionTime)}', size: 12),
                 const SizedBox(height: 12),
@@ -57,6 +57,19 @@ class SettingsPage extends StatelessWidget {
                 ]),
               ]),
             ),
+            if (s.hasSubscription)
+              PanelCard(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const H2('Запасные подписки'),
+                  const Hint(
+                      'Если основная подписка не загружается или ни один её сервер не отвечает, приложение возьмёт серверы из запасной. '
+                      'Подойдёт та же подписка по другому адресу (например, через другой сервер) или подписка другого сервиса.',
+                      size: 12),
+                  for (var k = 0; k < s.backups.length; k++) _backupRow(context, p, k),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(onPressed: () => _addBackup(context), icon: const Icon(Icons.add, size: 18), label: const Text('Добавить запасную')),
+                ]),
+              ),
             PanelCard(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 const H2('Остальной трафик'),
@@ -140,6 +153,113 @@ class SettingsPage extends StatelessWidget {
         );
       },
     );
+  }
+
+  Widget _backupRow(BuildContext context, Palette p, int k) {
+    final b = app.settings.backups[k];
+    final count = app.backupCount(k);
+    final err = app.backupErrors[b.url];
+    final time = app.backupTime(b);
+    final status = time == null
+        ? 'ещё не загружалась'
+        : '${count == 0 ? 'копия основной, новых серверов нет' : 'серверов: $count'} · обновлена ${_date(time)}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${k + 1}. ${b.host}', style: TextStyle(color: p.text, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+            Hint(status, size: 12),
+            if (err != null) Hint('Не загрузилась: $err', size: 12, color: p.bad),
+          ]),
+        ),
+        IconButton(
+          tooltip: 'Убрать',
+          icon: Icon(Icons.delete_outline, color: p.muted),
+          onPressed: () async {
+            final ok = await showDialog<bool>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Text('Убрать запасную подписку?'),
+                content: Text(b.host),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+                  TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Убрать')),
+                ],
+              ),
+            );
+            if (ok == true) await app.removeBackup(b);
+          },
+        ),
+      ]),
+    );
+  }
+
+  Future<void> _addBackup(BuildContext context) async {
+    final c = TextEditingController();
+    String error = '';
+    bool busy = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) {
+          final p = Palette.of(ctx);
+          return Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.of(ctx).viewInsets.bottom),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Запасная подписка', style: TextStyle(color: p.text, fontSize: 16, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              const Hint('Ссылка https://… Её можно добавить, даже если сейчас она не открывается: приложение попробует её при следующем обновлении.',
+                  size: 12),
+              const SizedBox(height: 12),
+              TextField(
+                controller: c,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: 'https://…',
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.content_paste),
+                    onPressed: () async {
+                      final d = await Clipboard.getData(Clipboard.kTextPlain);
+                      if (d?.text != null) c.text = d!.text!.trim();
+                    },
+                  ),
+                ),
+              ),
+              if (error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: Hint(error, color: p.bad)),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          setState(() {
+                            busy = true;
+                            error = '';
+                          });
+                          final (saved, msg) = await app.addBackup(c.text);
+                          if (saved) {
+                            if (ctx.mounted) Navigator.pop(ctx);
+                            if (context.mounted) toast(context, msg);
+                          } else {
+                            setState(() {
+                              busy = false;
+                              error = msg;
+                            });
+                          }
+                        },
+                  child: Text(busy ? 'Проверяю ссылку…' : 'Добавить'),
+                ),
+              ),
+            ]),
+          );
+        },
+      ),
+    );
+    c.dispose();
   }
 
   Future<void> _changeLink(BuildContext context) async {

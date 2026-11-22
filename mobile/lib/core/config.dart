@@ -10,7 +10,7 @@ enum MobileOs { android, ios }
 
 /// The node group the tunnel uses: who goes first and how sticky the choice is.
 class NodePlan {
-  NodePlan(this.nodes, this.tolerance, {required this.pinned});
+  NodePlan(this.nodes, this.tolerance, {required this.pinned, this.group = 0});
 
   /// Candidates in order of preference. sing-box's urltest keeps the first working one
   /// unless another one is faster by more than [tolerance] ms.
@@ -18,24 +18,35 @@ class NodePlan {
   final int tolerance;
   final bool pinned;
 
+  /// The subscription the candidates come from: 0 = main, 1.. = backup (see [Node.group]).
+  final int group;
+
+  /// Subscription groups that have at least one usable node, in order (main first).
+  static List<int> groups(List<Node> all) => (all.where((n) => n.supported).map((n) => n.group).toSet().toList())..sort();
+
   /// Builds the plan from the settings: a pinned node (plus a spare), or the "auto" pool with the last good node first.
-  static NodePlan? make(Settings s, List<Node> all) {
-    final pool = s.autoPool(all);
-    final pinned = s.findPinned(all);
+  /// "auto" takes one subscription at a time: the first one with usable nodes, or [group] when the caller falls back
+  /// to a backup subscription because none of the earlier ones answered.
+  static NodePlan? make(Settings s, List<Node> all, {int? group}) {
+    final pinned = group == null ? s.findPinned(all) : null;
     if (pinned != null && pinned.supported) {
       final list = [pinned];
       if (s.nodeFallback) {
-        final spare = pool.where((n) => n.index != pinned.index).firstOrNull;
+        final spare = s.autoPool(all.where((n) => n.group == pinned.group).toList()).where((n) => n.index != pinned.index).firstOrNull;
         if (spare != null) list.add(spare);
       }
       // a spare takes over only while the pinned node does not answer at all
-      return NodePlan(list, 60000, pinned: true);
+      return NodePlan(list, 60000, pinned: true, group: pinned.group);
     }
-    if (pool.isEmpty) return null;
-    final last = pool.where((n) => n.name == s.lastGoodNode).firstOrNull;
-    final ordered = [?last, ...pool.where((n) => n != last)];
-    // keep the node that works unless another one is much faster: a voice call is a new flow and must not hop
-    return NodePlan(ordered, 300, pinned: false);
+    for (final g in group == null ? groups(all) : [group]) {
+      final pool = s.autoPool(all.where((n) => n.group == g).toList());
+      if (pool.isEmpty) continue;
+      final last = pool.where((n) => n.name == s.lastGoodNode).firstOrNull;
+      final ordered = [?last, ...pool.where((n) => n != last)];
+      // keep the node that works unless another one is much faster: a voice call is a new flow and must not hop
+      return NodePlan(ordered, 300, pinned: false, group: g);
+    }
+    return null;
   }
 }
 
