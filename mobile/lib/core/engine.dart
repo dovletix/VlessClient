@@ -161,15 +161,82 @@ class AppState extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// The main subscription's nodes first (group 0), then each backup's (group 1..), numbered on. A link that is already
+  /// in the list is skipped, so a backup that mirrors the main subscription adds nothing (it still helps when the main
+  /// link cannot be downloaded).
   void _loadNodes() {
+    final seen = <String>{};
+    final list = <Node>[];
     final f = File(_subPath);
     if (f.existsSync()) {
-      nodes = Subscription.parseAll(f.readAsStringSync());
+      list.addAll(Subscription.parseAll(f.readAsStringSync(), seen: seen));
       subscriptionTime = f.lastModifiedSync();
     } else {
-      nodes = [];
       subscriptionTime = null;
     }
+    for (var k = 0; k < settings.backups.length; k++) {
+      final bf = File(_backupPath(settings.backups[k]));
+      if (!bf.existsSync()) continue;
+      list.addAll(Subscription.parseAll(bf.readAsStringSync(), start: list.length + 1, group: k + 1, seen: seen));
+    }
+    nodes = list;
+  }
+
+  /// The cached copy of a backup subscription, named after its link (removing one keeps the others' files).
+  String _backupPath(BackupSub b) {
+    var h = 0x811c9dc5;
+    for (final c in utf8.encode(b.url)) {
+      h = ((h ^ c) * 0x01000193) & 0xffffffff;
+    }
+    return '$dataDir/backup-${h.toRadixString(16).padLeft(8, '0')}.txt';
+  }
+
+  /// Why a backup subscription did not download last time (by link); absent when it did.
+  final Map<String, String> backupErrors = {};
+
+  DateTime? backupTime(BackupSub b) {
+    final f = File(_backupPath(b));
+    return f.existsSync() ? f.lastModifiedSync() : null;
+  }
+
+  /// Servers a backup subscription adds (number [k] from 0); links that are already in the list do not count.
+  int backupCount(int k) => nodes.where((n) => n.group == k + 1).length;
+
+  Future<bool> _downloadBackup(BackupSub b) async {
+    try {
+      final body = await Subscription.fetch(b.url, insecure: b.insecure, version: vpn.version);
+      if (body == null) {
+        backupErrors[b.url] = 'по ссылке нет серверов VLESS';
+        return false;
+      }
+      File(_backupPath(b)).writeAsStringSync(body, flush: true);
+      backupErrors.remove(b.url);
+      return true;
+    } catch (e) {
+      backupErrors[b.url] = _short(e);
+      return false;
+    }
+  }
+
+  /// Downloads the main subscription (when it is a link) and every backup; whatever fails keeps its cached copy.
+  /// Returns the main subscription's error, null when it downloaded or is not a link.
+  Future<String?> _downloadAll() async {
+    String? mainError;
+    if (settings.canDownload) {
+      try {
+        final body = await Subscription.fetch(settings.subscriptionUrl, insecure: settings.insecureTls, version: vpn.version);
+        if (body == null) {
+          mainError = 'по ссылке нет серверов VLESS';
+        } else {
+          File(_subPath).writeAsStringSync(body, flush: true);
+        }
+      } catch (e) {
+        mainError = _short(e);
+      }
+    }
+    await Future.wait(settings.backups.map(_downloadBackup));
+    _loadNodes();
+    return mainError;
   }
 
   void _writeSubscription(String text) {
@@ -229,18 +296,13 @@ class AppState extends ChangeNotifier {
       }
       _set(VpnState.connecting, 'Загружаю список серверов…');
       final stale = subscriptionTime == null || DateTime.now().difference(subscriptionTime!).inHours >= settings.updateHours;
-      if (settings.canDownload && (nodes.isEmpty || stale)) {
-        try {
-          final body = await Subscription.fetch(settings.subscriptionUrl, insecure: settings.insecureTls, version: vpn.version);
-          if (body != null) _writeSubscription(body);
-        } catch (_) {}
-      }
+      if (nodes.isEmpty || stale) await _downloadAll();
       if (nodes.isEmpty) {
         _fail('Не удалось загрузить список серверов: сервер подписки не отвечает. Возможно, ваш интернет-провайдер его не пропускает. '
-            'Попросите того, кто выдал подписку, прислать сами серверы (строки vless://) и вставьте их в «Настройках».');
+            'Добавьте в «Настройках» запасную подписку или попросите того, кто выдал подписку, прислать сами серверы (строки vless://).');
         return;
       }
-      final plan = NodePlan.make(settings, nodes);
+      var plan = NodePlan.make(settings, nodes);
       if (plan == null) {
         _fail('Ни один сервер из подписки не работает на телефоне: ${nodes.first.unsupportedReason ?? ''}.');
         return;
@@ -276,14 +338,45 @@ class AppState extends ChangeNotifier {
       }
 
       _set(VpnState.connecting, plan.pinned ? 'Проверяю сервер «${plan.nodes.first.name}»…' : 'Ищу самый быстрый сервер…');
-      final results = await Future.wait(plan.nodes.map((n) => api.delay(n.tag)));
+      var results = await Future.wait(plan.nodes.map((n) => api.delay(n.tag)));
       for (var i = 0; i < plan.nodes.length; i++) {
         delays[plan.nodes[i].tag] = results[i];
       }
       if (results.every((r) => r == null)) {
-        await vpn.stop();
-        _fail('Ни один сервер не отвечает. Возможно, нет интернета или провайдер их блокирует. Попробую ещё раз через минуту.');
-        return;
+        // none of these servers answers: try the backup subscriptions in turn (every node is an outbound of the
+        // running config already, so they can be measured before switching the group over to them)
+        NodePlan? alt;
+        final tried = plan.group;
+        for (final g in NodePlan.groups(nodes).where((g) => g > tried)) {
+          final p = NodePlan.make(settings, nodes, group: g);
+          if (p == null) continue;
+          _set(VpnState.connecting, 'Серверы не отвечают, пробую запасную подписку ${settings.backups[g - 1].host}…');
+          final r = await Future.wait(p.nodes.map((n) => api.delay(n.tag)));
+          for (var i = 0; i < p.nodes.length; i++) {
+            delays[p.nodes[i].tag] = r[i];
+          }
+          if (r.any((x) => x != null)) {
+            alt = p;
+            results = r;
+            break;
+          }
+        }
+        if (alt == null) {
+          await vpn.stop();
+          _fail('Ни один сервер не отвечает. Возможно, нет интернета или провайдер их блокирует. Попробую ещё раз через минуту.');
+          return;
+        }
+        plan = alt;
+        await vpn.reload(_buildConfig(plan), xray: xray);
+        for (var i = 0; i < 50 && !await api.alive(); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        results = await Future.wait(plan.nodes.map((n) => api.delay(n.tag)));
+        if (results.every((r) => r == null)) {
+          await vpn.stop();
+          _fail('Серверы запасной подписки перестали отвечать. Попробую ещё раз через минуту.');
+          return;
+        }
       }
       await Future<void>.delayed(const Duration(milliseconds: 300));
       var tag = await api.selected();
@@ -386,18 +479,82 @@ class AppState extends ChangeNotifier {
 
   Future<String?> refreshSubscription() async {
     if (!settings.hasSubscription) return 'Подписка не задана';
-    if (!settings.canDownload) return 'Серверы были вставлены вручную, скачивать нечего. Чтобы обновить их, вставьте новые в «Изменить ссылку».';
-    try {
-      final body = await Subscription.fetch(settings.subscriptionUrl, insecure: settings.insecureTls, version: vpn.version);
-      if (body == null) return 'По ссылке нет серверов VLESS.';
-      final old = File(_subPath).existsSync() ? File(_subPath).readAsStringSync() : '';
-      _writeSubscription(body);
-      notifyListeners();
-      if (old != body) await _reconnectIfRunning();
-      return null;
-    } catch (e) {
-      return 'Не удалось обновить подписку: ${_short(e)}';
+    if (!settings.canDownload && settings.backups.isEmpty) {
+      return 'Серверы были вставлены вручную, скачивать нечего. Чтобы обновить их, вставьте новые в «Изменить ссылку».';
     }
+    String sig() => nodes.map((n) => '${n.group}|${n.tag}|${n.address}|${n.port}|${n.id}|${n.name}|${n.query}').join('\n');
+    final old = sig();
+    final err = await _downloadAll();
+    notifyListeners();
+    if (old != sig()) await _reconnectIfRunning();
+    final failed = settings.backups.where((b) => backupErrors.containsKey(b.url)).map((b) => b.host).toList();
+    if (err != null) {
+      return settings.backups.isEmpty
+          ? 'Не удалось обновить подписку: $err'
+          : 'Основная подписка не загрузилась ($err), остались прежние серверы. Запасные: ${failed.isEmpty ? 'обновлены' : 'не загрузились ${failed.join(', ')}'}.';
+    }
+    if (failed.isNotEmpty) return 'Основная подписка обновлена, запасные не загрузились: ${failed.join(', ')}.';
+    return null;
+  }
+
+  /// Adds a backup subscription link. It is saved even when it does not download right now: a backup is often meant
+  /// for a network where the main one is blocked. Returns (saved, message for the user).
+  Future<(bool, String)> addBackup(String input) async {
+    final url = input.trim();
+    final u = Uri.tryParse(url);
+    if (u == null || !(u.scheme == 'https' || u.scheme == 'http') || u.host.isEmpty) {
+      return (false, 'Это не похоже на ссылку подписки. Она должна начинаться с https://');
+    }
+    if (url == settings.subscriptionUrl.trim() || settings.backups.any((b) => b.url == url)) return (false, 'Эта ссылка уже добавлена.');
+    final b = BackupSub(url);
+    String? body, err;
+    try {
+      body = await Subscription.fetch(url, version: vpn.version);
+    } on HandshakeException {
+      // self-hosted panels often use a self-signed certificate: accept it for this link, as for the main one
+      try {
+        body = await Subscription.fetch(url, insecure: true, version: vpn.version);
+        b.insecure = true;
+      } catch (e) {
+        err = _short(e);
+      }
+    } catch (e) {
+      err = _short(e);
+    }
+    settings.backups.add(b);
+    _saveSettings();
+    if (body != null) {
+      File(_backupPath(b)).writeAsStringSync(body, flush: true);
+      backupErrors.remove(url);
+    } else {
+      backupErrors[url] = err ?? 'по ссылке нет серверов VLESS';
+    }
+    _loadNodes();
+    notifyListeners();
+    if (body == null) {
+      return (true, 'Сохранил, но сейчас она не загружается (${backupErrors[url]}). Попробую при следующем обновлении.');
+    }
+    final added = backupCount(settings.backups.length - 1);
+    return (
+      true,
+      added == 0
+          ? 'Сохранил. Это копия основной подписки: новых серверов в ней нет, но она выручит, если основная ссылка перестанет загружаться.'
+          : 'Сохранил. Запасных серверов: $added.',
+    );
+  }
+
+  Future<void> removeBackup(BackupSub b) async {
+    // later backups get new numbers, so a tunnel that runs on a backup server is rebuilt
+    final onBackup = running && (currentNode?.group ?? 0) > 0;
+    settings.backups.removeWhere((x) => x.url == b.url);
+    _saveSettings();
+    try {
+      File(_backupPath(b)).deleteSync();
+    } catch (_) {}
+    backupErrors.remove(b.url);
+    _loadNodes();
+    notifyListeners();
+    if (onBackup) await _reconnectIfRunning();
   }
 
   static String _short(Object e) {
@@ -723,13 +880,18 @@ class AppState extends ChangeNotifier {
     try {
       host = Uri.parse(s.subscriptionUrl).host;
     } catch (_) {}
-    b.writeln('subscription host: $host  inline: ${s.inlineNodes}  cached: $subscriptionTime  nodes: ${nodes.length}');
+    b.writeln('subscription host: $host  inline: ${s.inlineNodes}  cached: $subscriptionTime  nodes: ${nodes.where((n) => n.group == 0).length}');
+    for (var k = 0; k < s.backups.length; k++) {
+      final bk = s.backups[k];
+      b.writeln('backup ${k + 1}: ${bk.host}  cached: ${backupTime(bk) ?? '-'}  new nodes: ${backupCount(k)}'
+          '${backupErrors.containsKey(bk.url) ? '  error: ${backupErrors[bk.url]}' : ''}');
+    }
     b.writeln('default: ${s.defaultRoute}  node setting: ${s.node}  auto_exclude: ${s.autoExclude}  ru_direct: ${s.ruDirect} geo: $geoAvailable');
     b.writeln('apps: ${s.apps.map((a) => '${a.name}=${a.vpn ? 'vpn' : 'direct'}').join('; ')}');
     b.writeln('nodes: (checked ${checkedAt ?? '-'}${checkedAt == null ? '' : checkedWithoutTunnel ? ' without tunnel' : ' through tunnel'})');
     for (final n in nodes) {
       final d = delays[n.tag];
-      b.writeln('  ${n.index.toString().padLeft(2)} ${n.name}  ${n.kind}${n.viaXray ? '  via xray' : ''}'
+      b.writeln('  ${n.index.toString().padLeft(2)}${n.group > 0 ? ' [b${n.group}]' : ''} ${n.name}  ${n.kind}${n.viaXray ? '  via xray' : ''}'
           '${n.supported ? '' : '  (${n.unsupportedReason})'}${d != null ? '  $d ms' : ''}');
     }
     b.writeln('--- sing-box.log ---');

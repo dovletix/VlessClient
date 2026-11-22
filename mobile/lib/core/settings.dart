@@ -25,6 +25,31 @@ class AppRule {
 
 List<String> _strings(Object? v) => v is List ? v.map((e) => e.toString()).where((s) => s.trim().isNotEmpty).toList() : <String>[];
 
+/// A backup subscription link: a mirror of the main one (the same panel through another address) or another
+/// provider. Its servers are used when the main subscription cannot be downloaded or none of its servers answers.
+class BackupSub {
+  BackupSub(this.url, {this.insecure = false});
+
+  final String url;
+  bool insecure; // self-signed certificate, accepted the first time it was added
+
+  String get host {
+    try {
+      return Uri.parse(url).host;
+    } catch (_) {
+      return url;
+    }
+  }
+
+  Map<String, dynamic> toJson() => {'url': url, 'insecure': insecure};
+
+  static BackupSub? fromJson(Object? j) {
+    if (j is String && j.trim().isNotEmpty) return BackupSub(j.trim());
+    if (j is! Map || (j['url'] ?? '').toString().trim().isEmpty) return null;
+    return BackupSub(j['url'].toString().trim(), insecure: j['insecure'] == true);
+  }
+}
+
 /// All user settings, stored as JSON in the app's data folder. Mirrors the Windows app's settings.json where it makes sense.
 class Settings {
   // subscription
@@ -32,6 +57,7 @@ class Settings {
   bool inlineNodes = false; // servers were pasted as vless:// lines instead of a link
   bool insecureTls = false;
   int updateHours = 12;
+  List<BackupSub> backups = [];
 
   // connection
   String node = 'auto'; // "auto", node number or part of its name
@@ -63,7 +89,13 @@ class Settings {
   bool get canDownload => !inlineNodes && subscriptionUrl.trim().isNotEmpty;
 
   Map<String, dynamic> toJson() => {
-        'subscription': {'url': subscriptionUrl, 'inline': inlineNodes, 'insecure_tls': insecureTls, 'update_hours': updateHours},
+        'subscription': {
+          'url': subscriptionUrl,
+          'inline': inlineNodes,
+          'insecure_tls': insecureTls,
+          'update_hours': updateHours,
+          'backups': backups.map((b) => b.toJson()).toList(),
+        },
         'node': node,
         'auto_exclude': autoExclude,
         'last_good_node': lastGoodNode,
@@ -93,6 +125,8 @@ class Settings {
       s.inlineNodes = sub['inline'] == true;
       s.insecureTls = sub['insecure_tls'] == true;
       s.updateHours = max(1, (sub['update_hours'] is int) ? sub['update_hours'] as int : 12);
+      final b = sub['backups'];
+      if (b is List) s.backups = b.map(BackupSub.fromJson).whereType<BackupSub>().toList();
     }
     s.node = (j['node'] ?? 'auto').toString();
     s.autoExclude = (j['auto_exclude'] ?? '').toString();

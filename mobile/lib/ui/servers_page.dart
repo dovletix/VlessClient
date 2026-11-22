@@ -18,7 +18,8 @@ class ServersPage extends StatelessWidget {
         final s = app.settings;
         final pinned = s.findPinned(app.nodes);
         final auto = pinned == null;
-        final pool = s.autoPool(app.nodes).map((n) => n.index).toSet();
+        // "auto" works on one subscription at a time; the exclusion hint is about the main one
+        final pool = s.autoPool(app.nodes.where((n) => n.group == 0).toList()).map((n) => n.index).toSet();
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
           children: [
@@ -60,7 +61,16 @@ class ServersPage extends StatelessWidget {
                       title: Text('Автоматически (рекомендуется)', style: TextStyle(color: p.text, fontWeight: FontWeight.w600)),
                       subtitle: const Hint('Самый быстрый рабочий сервер; при сбое — следующий.', size: 12),
                     ),
-                    for (final n in app.nodes)
+                    for (final n in app.nodes) ...[
+                      if (n.group > 0 && app.nodes.firstWhere((x) => x.group == n.group) == n)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text('Запасная подписка ${n.group} · ${s.backups.length >= n.group ? s.backups[n.group - 1].host : ''}',
+                                style: TextStyle(color: p.text, fontWeight: FontWeight.w700)),
+                            const Hint('Эти серверы используются, если ни один сервер основной подписки не отвечает.', size: 12),
+                          ]),
+                        ),
                       RadioListTile<String>(
                         value: '${n.index}',
                         enabled: n.supported,
@@ -75,7 +85,7 @@ class ServersPage extends StatelessWidget {
                           Expanded(
                             child: Hint(
                               n.supported
-                                  ? '${n.kind}${n.viaXray ? ' · через Xray' : ''}${auto && !pool.contains(n.index) ? ' · не участвует в автовыборе' : ''}'
+                                  ? '${n.kind}${n.viaXray ? ' · через Xray' : ''}${auto && n.group == 0 && !pool.contains(n.index) ? ' · не участвует в автовыборе' : ''}'
                                   : n.unsupportedReason!,
                               size: 12,
                             ),
@@ -85,6 +95,7 @@ class ServersPage extends StatelessWidget {
                                 style: TextStyle(color: app.delays[n.tag] == null ? p.bad : p.ok, fontSize: 12, fontWeight: FontWeight.w600)),
                         ]),
                       ),
+                    ],
                   ]),
                 ),
               ),

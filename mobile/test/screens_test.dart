@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vlessclient/core/engine.dart';
 import 'package:vlessclient/core/node.dart';
+import 'package:vlessclient/core/settings.dart';
 import 'package:vlessclient/core/traffic.dart';
 import 'package:vlessclient/main.dart';
 
@@ -93,7 +94,12 @@ void main() {
         'vless://11111111-2222-3333-4444-555555555555@203.0.113.11:443?type=tcp&security=reality&pbk=k&sid=1&sni=a.example#Нидерланды 2',
         'vless://11111111-2222-3333-4444-555555555555@203.0.113.12:443?type=xhttp&security=reality&pbk=k&sid=1&sni=a.example#Через ретранслятор',
       ].join('\n'));
+      app.nodes.add(Node.parse(
+          'vless://11111111-2222-3333-4444-555555555555@198.51.100.20:443?type=tcp&security=reality&pbk=k&sid=1&sni=b.example#Другой сервис',
+          4,
+          group: 1)!);
       app.settings
+        ..backups = [BackupSub('https://mirror.example.net/sub/abc')]
         ..subscriptionUrl = 'https://sub.example.org/abc'
         ..directDomains = ['gosuslugi.ru', 'sberbank.ru']
         ..proxyDomains = ['youtube.com']

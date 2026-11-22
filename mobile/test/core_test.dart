@@ -212,6 +212,58 @@ void main() {
     });
   });
 
+  group('backup subscriptions', () {
+    // a backup that mirrors the main subscription (same links, other names) plus one server of its own
+    const other = 'vless://11111111-2222-3333-4444-555555555555@198.51.100.7:443?type=tcp&security=reality&flow=xtls-rprx-vision'
+        '&fp=chrome&sni=www.example.net&pbk=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefg&sid=02#Other%20provider';
+
+    List<Node> load() {
+      final seen = <String>{};
+      final main = Subscription.parseAll('$reality\n$ws', seen: seen);
+      final backup = Subscription.parseAll('${reality.split('#').first}#Same%20server%20renamed\n$other',
+          start: main.length + 1, group: 1, seen: seen);
+      return [...main, ...backup];
+    }
+
+    test('backup servers are numbered on and duplicates of the main list are skipped', () {
+      final all = load();
+      expect(all.map((n) => '${n.index}:${n.group}:${n.name}'), ['1:0:Server One', '2:0:Three', '3:1:Other provider']);
+      expect(all.map((n) => n.tag).toSet().length, 3, reason: 'tags stay unique across subscriptions');
+    });
+
+    test('auto uses the main subscription first and a backup only when asked to fall back', () {
+      final all = load();
+      final s = Settings();
+      expect(NodePlan.groups(all), [0, 1]);
+      final plan = NodePlan.make(s, all)!;
+      expect(plan.group, 0);
+      expect(plan.nodes.map((n) => n.index), [1, 2]);
+      final alt = NodePlan.make(s, all, group: 1)!;
+      expect(alt.group, 1);
+      expect(alt.nodes.map((n) => n.name), ['Other provider']);
+      // without usable main servers (e.g. the main list never downloaded) the first backup is the plan
+      expect(NodePlan.make(s, all.where((n) => n.group == 1).toList())!.group, 1);
+    });
+
+    test('a pinned backup server gets its spare from the same subscription', () {
+      final all = [...load(), Node.parse(other.replaceFirst('198.51.100.7', '198.51.100.8').replaceFirst('Other%20provider', 'Other%202'), 4, group: 1)!];
+      final s = Settings()..node = '3';
+      final plan = NodePlan.make(s, all)!;
+      expect(plan.pinned, isTrue);
+      expect(plan.group, 1);
+      expect(plan.nodes.map((n) => n.index), [3, 4]);
+    });
+
+    test('settings keep the backup links', () {
+      final s = Settings()
+        ..subscriptionUrl = 'https://example.com/sub/a'
+        ..backups = [BackupSub('https://example.org/sub/a', insecure: true), BackupSub('https://example.net/s')];
+      final r = Settings.fromJson(jsonDecode(jsonEncode(s.toJson())) as Map<String, dynamic>);
+      expect(r.backups.map((b) => '${b.url}|${b.insecure}|${b.host}'),
+          ['https://example.org/sub/a|true|example.org', 'https://example.net/s|false|example.net']);
+    });
+  });
+
   group('settings', () {
     test('json round trip', () {
       final s = Settings()

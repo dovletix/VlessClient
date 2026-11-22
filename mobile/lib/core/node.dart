@@ -10,8 +10,11 @@ class Node {
     required this.address,
     required this.port,
     required this.query,
+    this.group = 0,
   });
 
+  /// 0 = the main subscription, 1.. = backup subscription number (its servers are used when none of the main ones works).
+  final int group;
   final int index;
   final String name;
   final String id;
@@ -82,7 +85,7 @@ class Node {
     }
   }
 
-  static Node? parse(String line, int index) {
+  static Node? parse(String line, int index, {int group = 0}) {
     final m = _link.firstMatch(line.trim());
     if (m == null) return null;
     final port = int.tryParse(m.group(3)!);
@@ -101,7 +104,7 @@ class Node {
     if (name.isEmpty) name = 'Сервер $index';
     var address = m.group(2)!;
     if (address.startsWith('[')) address = address.substring(1, address.length - 1);
-    return Node(index: index, name: name, id: _unescape(m.group(1)!), address: address, port: port, query: query);
+    return Node(index: index, name: name, id: _unescape(m.group(1)!), address: address, port: port, query: query, group: group);
   }
 }
 
@@ -129,13 +132,18 @@ class Subscription {
     return lines.isEmpty ? null : lines.join('\n');
   }
 
-  static List<Node> parseAll(String? text) {
+  /// Numbers the nodes from [start]. With [seen], a link already there (same server, any name) is skipped and the
+  /// new ones are added to it: a backup subscription that mirrors the main one adds no duplicates.
+  static List<Node> parseAll(String? text, {int start = 1, int group = 0, Set<String>? seen}) {
     final res = <Node>[];
     if (text == null) return res;
-    var i = 0;
+    var i = start - 1;
     for (final line in text.split('\n')) {
-      final n = Node.parse(line, i + 1);
+      final key = line.trim().split('#').first;
+      if (seen != null && seen.contains(key)) continue;
+      final n = Node.parse(line, i + 1, group: group);
       if (n == null) continue;
+      seen?.add(key);
       i++;
       res.add(n);
     }
