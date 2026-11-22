@@ -139,7 +139,9 @@ class Subscription {
     if (text == null) return res;
     var i = start - 1;
     for (final line in text.split('\n')) {
-      final key = line.trim().split('#').first;
+      // the same server = the same user id, address and port; the query may differ between two downloads
+      // (3x-ui picks a random short id from the inbound's list for every answer)
+      final key = line.trim().split('#').first.split('?').first.toLowerCase();
       if (seen != null && seen.contains(key)) continue;
       final n = Node.parse(line, i + 1, group: group);
       if (n == null) continue;

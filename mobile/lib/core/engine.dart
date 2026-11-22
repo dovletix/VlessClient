@@ -295,7 +295,9 @@ class AppState extends ChangeNotifier {
         } catch (_) {}
       }
       _set(VpnState.connecting, 'Загружаю список серверов…');
-      final stale = subscriptionTime == null || DateTime.now().difference(subscriptionTime!).inHours >= settings.updateHours;
+      bool old(DateTime? t) => t == null || DateTime.now().difference(t).inHours >= settings.updateHours;
+      // a backup that was never downloaded (or long ago) counts too: it is what saves the day when the main servers die
+      final stale = old(subscriptionTime) || settings.backups.any((b) => old(backupTime(b)));
       if (nodes.isEmpty || stale) await _downloadAll();
       if (nodes.isEmpty) {
         _fail('Не удалось загрузить список серверов: сервер подписки не отвечает. Возможно, ваш интернет-провайдер его не пропускает. '

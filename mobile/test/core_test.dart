@@ -220,7 +220,8 @@ void main() {
     List<Node> load() {
       final seen = <String>{};
       final main = Subscription.parseAll('$reality\n$ws', seen: seen);
-      final backup = Subscription.parseAll('${reality.split('#').first}#Same%20server%20renamed\n$other',
+      // the mirror renames the server and (like 3x-ui) hands out another short id: still the same server
+      final backup = Subscription.parseAll('${reality.split('#').first.replaceFirst('sid=0123abcd', 'sid=ffff')}#Same%20server%20renamed\n$other',
           start: main.length + 1, group: 1, seen: seen);
       return [...main, ...backup];
     }
