@@ -48,7 +48,7 @@ namespace VlessClient.Service
             try { settings.Save(); } catch (Exception e) { Log.Write("settings: cannot save: " + e.Message); }
             nodes = Subscription.LoadCached(settings);
             KillOrphans();
-            try { job = new JobObject(); } catch (Exception e) { Log.Write("job object: " + e.Message); }
+            try { job = new JobObject(); Prober.Job = job; } catch (Exception e) { Log.Write("job object: " + e.Message); }
             Log.Write($"engine: started, version {Updater.CurrentVersion}, elevated={IsElevated}, enabled={settings.Enabled}");
             if (IsElevated) OldComponents.RemoveInBackground();
             if (!settings.HasSubscription) SetState(State.NoSubscription, "Нужна ссылка на подписку");
@@ -403,6 +403,8 @@ namespace VlessClient.Service
                         lock (gate) lastProbe = probed.ToList();
                         if (ct.IsCancellationRequested) return;
                         Log.Write($"probe (subscription {g}): " + string.Join(", ", probe.Select(r => $"{r.Node.Index}={(r.Ok ? r.Ms + "ms" : "fail")}")));
+                        var reasons = probe.Where(r => !r.Ok).GroupBy(r => r.Error).Select(x => x.Key + " ×" + x.Count()).ToList();
+                        if (reasons.Count > 0) Log.Write("probe failures: " + string.Join("; ", reasons));
                         var ok = probe.Where(r => r.Ok).ToList();
                         if (ok.Count == 0) continue;
                         // keep the node that worked last time unless another one is much faster: fewer surprises for the user

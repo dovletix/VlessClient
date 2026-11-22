@@ -39,7 +39,7 @@ Windows VPN client for VLESS subscriptions, aimed at non-technical users (one bi
 - The tunnel is the only mode. The mixed proxy on 12080 always runs next to it (the connect check goes through it, and apps that support a proxy may use it); only a non-elevated `--console` run has no TUN.
 - IPv6 on the tunnel only when a physical adapter has a real global IPv6 address. Teredo (2001:0::/32 on a Tunnel-type interface) and 6to4 do not count: an IPv6 route on the tunnel without real IPv6 makes direct IPv6 connections hang.
 - Updates: manual by default (button in Settings); `auto_update` makes the service check every 12 h and install. The service downloads the MSI from this repo's releases only, checks the SHA-256 digest and runs `msiexec /qn`; the window notices status "installing", schedules its own restart and exits; the MSI closes running copies (util:CloseApplication) so no reboot is needed.
-- Ports (localhost): mixed proxy 12080, xray SOCKS 12081, Clash API 12090 (secret in settings), probe ports 12200+.
+- Ports (localhost): mixed proxy 12080, xray SOCKS 12081, Clash API 12090 (secret in settings), probe ports 12200 + node index. The prober checks that every probe port is free first and moves to the next 1000-block (13200, … 19200) when one is taken: in 2.4.0 a leftover xray on 12201 made every node look dead ("probe failures:" in service.log now names the reason). The probe xray joins the engine's job object, so it dies with the engine.
 
 ## Window look and the "Процессы" monitor
 

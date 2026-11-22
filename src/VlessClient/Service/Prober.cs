@@ -23,6 +23,9 @@ namespace VlessClient.Service
     {
         public const int BasePort = 12200;
 
+        /// <summary>The engine's job object (kill on close): a probe xray dies with the engine instead of holding the ports.</summary>
+        internal static JobObject Job;
+
         /// <summary>HTTP GET http://www.gstatic.com/generate_204 through a local SOCKS5 port. Returns milliseconds or throws.</summary>
         public static async Task<int> HttpThroughSocks(int port, int timeoutMs)
         {
@@ -78,8 +81,12 @@ namespace VlessClient.Service
         {
             var results = nodes.Select(n => new ProbeResult { Node = n, Error = "не проверен" }).ToList();
             if (nodes.Count == 0) return results;
+            // Every probe port must be free. A port held by another program (once: a leftover probe xray) answers instead
+            // of ours, our xray cannot listen and exits, and every node looks dead.
+            var basePort = FreeBase(nodes);
+            if (basePort < 0) { foreach (var r in results) r.Error = "нет свободных портов для проверки"; return results; }
             var cfgPath = Path.Combine(Paths.RuntimeDir, "xray-probe.json");
-            File.WriteAllText(cfgPath, Json.Serialize(XrayConfig.Probe(nodes, BasePort, Path.Combine(Paths.LogsDir, "xray-probe.log")), true), Paths.Utf8);
+            File.WriteAllText(cfgPath, Json.Serialize(XrayConfig.Probe(nodes, basePort, Path.Combine(Paths.LogsDir, "xray-probe.log")), true), Paths.Utf8);
             Process p = null;
             try
             {
@@ -87,13 +94,14 @@ namespace VlessClient.Service
                 {
                     UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Paths.RuntimeDir
                 });
-                // wait until the first port listens
-                var first = BasePort + nodes[0].Index;
-                for (var i = 0; i < 40 && !p.HasExited && NetInfo.IsPortFree(first); i++) await Task.Delay(100).ConfigureAwait(false);
-                if (p.HasExited) { foreach (var r in results) r.Error = "xray не запустился"; return results; }
+                try { Job?.Add(p); } catch (Exception e) { Log.Write("job: cannot add probe: " + e.Message); }
+                // wait until the last port listens (xray opens the inbounds in order)
+                var last = basePort + nodes.Max(n => n.Index);
+                for (var i = 0; i < 40 && !p.HasExited && NetInfo.IsPortFree(last); i++) await Task.Delay(100).ConfigureAwait(false);
+                if (p.HasExited) { foreach (var r in results) r.Error = "xray не запустился (код " + p.ExitCode + ")"; return results; }
                 await Task.WhenAll(results.Select(async r =>
                 {
-                    try { r.Ms = await HttpThroughSocks(BasePort + r.Node.Index, timeoutMs).ConfigureAwait(false); r.Ok = true; r.Error = ""; }
+                    try { r.Ms = await HttpThroughSocks(basePort + r.Node.Index, timeoutMs).ConfigureAwait(false); r.Ok = true; r.Error = ""; }
                     catch (Exception e) { r.Ok = false; r.Error = e.Message; }
                 })).ConfigureAwait(false);
             }
@@ -103,6 +111,17 @@ namespace VlessClient.Service
                 p?.Dispose();
             }
             return results.OrderByDescending(r => r.Ok).ThenBy(r => r.Ok ? r.Ms : int.MaxValue).ThenBy(r => r.Node.Index).ToList();
+        }
+
+        /// <summary>The first of 12200, 13200, … 19200 at which every node's probe port (base + index) is free; -1 if none.</summary>
+        private static int FreeBase(IList<Node> nodes)
+        {
+            for (var k = 0; k < 8; k++)
+            {
+                var b = BasePort + 1000 * k;
+                if (nodes.All(n => NetInfo.IsPortFree(b + n.Index))) return b;
+            }
+            return -1;
         }
     }
 }
