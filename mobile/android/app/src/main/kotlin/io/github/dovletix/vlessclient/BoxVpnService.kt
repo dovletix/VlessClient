@@ -164,7 +164,7 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
         val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL) else Notification.Builder(this)
         val n = b.setContentTitle("VlessClient")
             .setContentText("VPN включён")
-            .setSmallIcon(R.drawable.ic_vpn)
+            .setSmallIcon(R.drawable.ic_vpn_text)
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(open)
