@@ -207,6 +207,7 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
             stopTunnel()
         } finally {
             starting = false
+            VpnTile.refresh(this)
         }
     }
 
@@ -256,6 +257,7 @@ class BoxVpnService : VpnService(), PlatformInterface, CommandServerHandler {
         XrayProcess.stop()
         DefaultNetworkMonitor.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        VpnTile.refresh(this)
         stopSelf()
     }
 
